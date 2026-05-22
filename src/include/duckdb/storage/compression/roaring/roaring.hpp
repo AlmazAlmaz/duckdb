@@ -533,7 +533,8 @@ public:
 	}
 
 	void Verify() const override {
-#ifdef DEBUG
+#ifdef D_ASSERT_IS_ENABLED
+		DUCKDB_DEBUG_VERIFY_GUARD();
 		uint16_t index = 0;
 		auto array = reinterpret_cast<uint16_t *>(data);
 		for (uint16_t i = 0; i < count; i++) {
@@ -572,7 +573,8 @@ public:
 		this->array_index++;
 	}
 	void Verify() const override {
-#ifdef DEBUG
+#ifdef D_ASSERT_IS_ENABLED
+		DUCKDB_DEBUG_VERIFY_GUARD();
 		uint16_t index = 0;
 		ContainerSegmentScan verify_segment(segments);
 		for (uint16_t i = 0; i < this->count; i++) {

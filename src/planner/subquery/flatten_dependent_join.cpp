@@ -1257,12 +1257,14 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownSetOperatio
                                                                                   vector<ColumnBinding> state) {
 	auto &setop = plan->Cast<LogicalSetOperation>();
 	UnnestingState result(std::move(state));
-#ifdef DEBUG
-	for (auto &child : plan->children) {
-		child->ResolveOperatorTypes();
-	}
-	for (idx_t i = 1; i < plan->children.size(); i++) {
-		D_ASSERT(plan->children[0]->types.size() == plan->children[i]->types.size());
+#ifdef D_ASSERT_IS_ENABLED
+	if (DUCKDB_DEBUG_VERIFY_ENABLED()) {
+		for (auto &child : plan->children) {
+			child->ResolveOperatorTypes();
+		}
+		for (idx_t i = 1; i < plan->children.size(); i++) {
+			D_ASSERT(plan->children[0]->types.size() == plan->children[i]->types.size());
+		}
 	}
 #endif
 	for (auto &child : plan->children) {
@@ -1277,15 +1279,17 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownSetOperatio
 		}
 	}
 
-#ifdef DEBUG
+#ifdef D_ASSERT_IS_ENABLED
 	for (idx_t i = 1; i < plan->children.size(); i++) {
 		D_ASSERT(plan->children[0]->GetColumnBindings().size() == plan->children[i]->GetColumnBindings().size());
 	}
-	for (auto &child : plan->children) {
-		child->ResolveOperatorTypes();
-	}
-	for (idx_t i = 1; i < plan->children.size(); i++) {
-		D_ASSERT(plan->children[0]->types.size() == plan->children[i]->types.size());
+	if (DUCKDB_DEBUG_VERIFY_ENABLED()) {
+		for (auto &child : plan->children) {
+			child->ResolveOperatorTypes();
+		}
+		for (idx_t i = 1; i < plan->children.size(); i++) {
+			D_ASSERT(plan->children[0]->types.size() == plan->children[i]->types.size());
+		}
 	}
 #endif
 	result.bindings = CreateContiguousState(ColumnBinding(setop.table_index, ProjectionIndex(setop.column_count)));
@@ -1374,9 +1378,11 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownGet(unique_
 FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownCTE(unique_ptr<LogicalOperator> &plan,
                                                                          bool propagate_null_values,
                                                                          vector<ColumnBinding> state) {
-#ifdef DEBUG
-	plan->children[0]->ResolveOperatorTypes();
-	plan->children[1]->ResolveOperatorTypes();
+#ifdef D_ASSERT_IS_ENABLED
+	if (DUCKDB_DEBUG_VERIFY_ENABLED()) {
+		plan->children[0]->ResolveOperatorTypes();
+		plan->children[1]->ResolveOperatorTypes();
+	}
 #endif
 	if (plan->type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE && !RequiresDomain(*plan->children[0])) {
 		UnnestingState result(std::move(state));
@@ -1420,9 +1426,11 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownCTE(unique_
 	RewriteCorrelatedBindings(*plan, right_state.bindings);
 	result.replacement_graph.Merge(right_state.replacement_graph);
 
-#ifdef DEBUG
-	plan->children[0]->ResolveOperatorTypes();
-	plan->children[1]->ResolveOperatorTypes();
+#ifdef D_ASSERT_IS_ENABLED
+	if (DUCKDB_DEBUG_VERIFY_ENABLED()) {
+		plan->children[0]->ResolveOperatorTypes();
+		plan->children[1]->ResolveOperatorTypes();
+	}
 #endif
 
 	cte.column_count += correlated_columns.size();
