@@ -16,6 +16,7 @@
 #include "duckdb/common/random_engine.hpp"
 #include "duckdb/storage/table/segment_lock.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/parallel/lookup_tasks.hpp"
 #include "duckdb/parser/parsed_data/sample_options.hpp"
 #include "duckdb/common/enums/scan_options.hpp"
 #include "duckdb/storage/storage_index.hpp"
@@ -298,6 +299,21 @@ public:
 	//! The amount of tuples considered by a scan, before applying filters
 	idx_t rows_scanned = 0;
 
+	//! Optional ascending-sorted requested row ids [pk_lookups_it, pk_lookups_end). When set the scan
+	//! is a rowid lookup: it skips whole row groups / vectors holding none of these ids (advancing
+	//! pk_lookups_it), keeps only rows whose id is requested, and still applies the pushed table filters.
+	//! A requested id whose row is absent (deleted) or filtered out yields no result row; surviving rows
+	//! are exposed positionally via valid_sel / lookup_base (see below). Null begin = disabled.
+	const row_t *pk_lookups_it = nullptr;
+	const row_t *pk_lookups_end = nullptr;
+	//! Rowid-lookup output (non-compacted). When pk_lookups is set the scan reads each requested vector in
+	//! place -- no compaction -- and leaves the surviving (present + filter-passing) row slots in
+	//! valid_sel[0, lookup_count); lookup_base is the absolute row id of slot 0. The caller maps each
+	//! survivor slot to a row id (lookup_base + slot) -> pk and scatters, so no rowid column or per-row
+	//! mapping array is needed.
+	idx_t lookup_count = 0;
+	idx_t lookup_base = 0;
+
 	//! Optional state for custom row group ordering
 	unique_ptr<RowGroupReorderer> reorderer;
 
@@ -310,9 +326,13 @@ public:
 	TableScanOptions &GetOptions();
 	optional_ptr<SegmentNode<RowGroup>> GetRowGroup() const;
 	void SetRowGroup(optional_ptr<SegmentNode<RowGroup>> row_group);
+	bool IsPinned(const RowGroup &row_group) const;
 	optional_ptr<SegmentNode<RowGroup>> GetNextRowGroup(SegmentNode<RowGroup> &row_group) const;
 	optional_ptr<SegmentNode<RowGroup>> GetNextRowGroup(SegmentLock &l, SegmentNode<RowGroup> &row_group) const;
 	optional_ptr<SegmentNode<RowGroup>> GetRootSegment() const;
+	//! Rowid lookup: position at the next row group holding a requested id, skipping filter-pruned ones.
+	//! Returns false (and clears row_group) when no requested id remains in [.., max_row).
+	bool InitializeLookupRowGroup();
 	bool Scan(DuckTransaction &transaction, DataChunk &result);
 	bool Scan(ScanOptions options, DataChunk &result, optional_ptr<SegmentLock> l = nullptr);
 	bool Scan(DataChunk &result, TableScanType type, optional_ptr<SegmentLock> l = nullptr);
@@ -428,6 +448,13 @@ struct ParallelTableScanState {
 	ParallelCollectionScanState scan_state;
 	//! Parallel scan state for the transaction-local state
 	ParallelCollectionScanState local_state;
+};
+
+//! Caller-owned state of DataTable::LookupRows, kept across calls
+struct TableLookupState : LookupTaskOutput {
+	unique_ptr<TableScanState> scan;
+	DataChunk scratch;
+	vector<unique_ptr<TableLookupState>> workers;
 };
 
 struct PrefetchState {

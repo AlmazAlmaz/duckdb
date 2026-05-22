@@ -209,6 +209,10 @@ public:
 	idx_t group_index;
 	idx_t offset_in_group;
 	idx_t group_offset;
+	//! Absolute file row of the first row of the chunk most recently produced by Process(), captured before
+	//! offset_in_group advances -- lets a consumer derive each row's file position (base + r when dense,
+	//! base + sel[r] when pushed filters compacted the chunk) without a file_row_number column.
+	idx_t chunk_row_base = 0;
 	shared_ptr<CachingFileHandle> file_handle;
 	vector<unique_ptr<ColumnReader>> column_readers;
 	duckdb_base_std::unique_ptr<duckdb_apache::thrift::protocol::TProtocol> thrift_file_proto;
@@ -216,6 +220,7 @@ public:
 	//! Set while resuming payload-column decode after the filter-column I/O blocked (vs a fresh row-group pass)
 	bool resuming_payload = false;
 	SelectionVector sel;
+	std::span<const sel_t> lookup_rows;
 
 	ResizeableBuffer define_buf;
 	ResizeableBuffer repeat_buf;
@@ -381,6 +386,11 @@ public:
 	AsyncResult Scan(ClientContext &context, GlobalTableFunctionState &global_state,
 	                 LocalTableFunctionState &local_state, DataChunk &chunk) override;
 	void FinishFile(ClientContext &context, GlobalTableFunctionState &gstate_p) override;
+	//! Skip `num_rows` forward in the currently-open row group WITHOUT decoding them -- each column reader
+	//! walks page headers (ColumnReader::Skip) instead of decompressing -- and advance offset_in_group. Lets
+	//! the lookup jump straight to a target row's vector rather than decoding every intervening row, like the
+	//! native storage lookup's skip-to-vector. Only valid on the no-filter scan path (dense decode).
+	void SkipRows(ParquetReaderScanState &state, idx_t num_rows);
 	double GetProgressInFile(ClientContext &context) override;
 	void PrepareReadAhead(ClientContext &context, GlobalTableFunctionState &gstate) override;
 

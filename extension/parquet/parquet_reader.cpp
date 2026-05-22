@@ -2241,6 +2241,15 @@ idx_t ParquetReader::EvaluateFilters(ParquetReaderScanState &state, DataChunk &r
 	D_ASSERT(!filters || state.scan_filters.size() == filters->FilterCount());
 
 	bool is_first_filter = true;
+	if (!state.lookup_rows.empty()) {
+		D_ASSERT(!deletion_filter);
+		state.sel.Initialize(STANDARD_VECTOR_SIZE);
+		for (idx_t i = 0; i < state.lookup_rows.size(); i++) {
+			state.sel.set_index(i, state.lookup_rows[i]);
+		}
+		filter_count = state.lookup_rows.size();
+		is_first_filter = false;
+	}
 	if (deletion_filter) {
 		auto row_start = UnsafeNumericCast<row_t>(state.offset_in_group + state.group_offset);
 		filter_count = deletion_filter->Filter(row_start, scan_count, state.sel);
@@ -2359,6 +2368,9 @@ AsyncResult ParquetReader::Process(ClientContext &context, ParquetReaderScanStat
 	const bool log_prefetch =
 	    Logger::Get(context).ShouldLog(ParquetPrefetchLogType::NAME, ParquetPrefetchLogType::LEVEL);
 	const idx_t group_num_rows = GetGroup(state).num_rows;
+	// Absolute file row of this chunk's first row, captured before offset_in_group advances below, so lookup
+	// consumers can derive each row's file position positionally instead of decoding a file_row_number column.
+	state.chunk_row_base = state.group_offset + state.offset_in_group;
 	auto scan_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, group_num_rows - state.offset_in_group);
 	if (!state.resuming_payload) {
 		result.SetChildCardinality(scan_count);
@@ -2378,7 +2390,7 @@ AsyncResult ParquetReader::Process(ClientContext &context, ParquetReaderScanStat
 	auto define_ptr = (uint8_t *)state.define_buf.ptr;
 	auto repeat_ptr = (uint8_t *)state.repeat_buf.ptr;
 
-	if (filters || deletion_filter) {
+	if (filters || deletion_filter || !state.lookup_rows.empty()) {
 		auto res = ProcessFilters(state, result, scan_count, define_ptr, repeat_ptr, log_prefetch);
 		if (res.GetResultType() == AsyncResultType::BLOCKED) {
 			// we must wait  on the payload I/O
@@ -2408,6 +2420,19 @@ AsyncResult ParquetReader::Process(ClientContext &context, ParquetReaderScanStat
 	state.offset_in_group += scan_count;
 	state.resuming_payload = false;
 	return SourceResultType::HAVE_MORE_OUTPUT;
+}
+
+void ParquetReader::SkipRows(ParquetReaderScanState &state, idx_t num_rows) {
+	if (num_rows == 0) {
+		return;
+	}
+	// Skip in each projected column reader (walks page headers, no decompress) and advance the in-group
+	// cursor so the next Process() decodes from the new position.
+	for (idx_t i = 0; i < column_ids.size(); i++) {
+		auto col_idx = MultiFileLocalIndex(i);
+		state.GetColumnReader(col_idx).Skip(num_rows);
+	}
+	state.offset_in_group += num_rows;
 }
 
 } // namespace duckdb
