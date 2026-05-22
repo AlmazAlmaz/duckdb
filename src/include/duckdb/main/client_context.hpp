@@ -228,14 +228,14 @@ public:
 
 	//! Iterate a query's statements as a StatementIterator (iterator-style API). The caller drives
 	//! Peek() + GetStatement() to walk through ready-to-execute statements one by one
-	DUCKDB_API StatementIterator IterateStatements(const string &query);
+	DUCKDB_API StatementIterator IterateStatements(const string &query, bool wrap_multi = true);
 
 	//! Preprocess a peel of parse-facing statements into engine-facing ones (PRAGMA reparse,
 	//! MULTI_STATEMENT unpack, transaction wrapping), replacing `buffer` in place. Acquires the
 	//! context lock internally when `lock` is null (callers that do not already hold it, e.g. the
 	//! shell). Drives StatementIterator's preprocessing.
 	DUCKDB_API void PreprocessStatements(vector<unique_ptr<SQLStatement>> &buffer,
-	                                     optional_ptr<ClientContextLock> lock = nullptr);
+	                                     optional_ptr<ClientContextLock> lock = nullptr, bool wrap_multi = true);
 
 	//! Extract the logical plan of a query
 	DUCKDB_API unique_ptr<LogicalOperator> ExtractPlan(const string &query);
@@ -347,7 +347,8 @@ private:
 	//! Wait until a task is available to execute
 	void WaitForTask(ClientContextLock &lock, BaseQueryResult &result);
 	//! Run one partial task slice of the open result on the calling thread
-	QueryResultState ExecuteTaskInternal(ClientContextLock &lock, BaseQueryResult &result);
+	QueryResultState ExecuteTaskInternal(ClientContextLock &lock, BaseQueryResult &result,
+	                                     std::function<void()> on_reschedule_arg = {});
 	//! Report the execution state of the open result without running any task
 	QueryResultState PollInternal(ClientContextLock &lock, BaseQueryResult &result);
 	//! Record the error on the result, end the query and report EXECUTION_ERROR

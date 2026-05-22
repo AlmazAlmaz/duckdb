@@ -230,10 +230,10 @@ QueryResultState QueryResult::Poll() {
 	return context->PollInternal(*lock, *this);
 }
 
-QueryResultState QueryResult::ExecuteTask() {
+QueryResultState QueryResult::ExecuteTask(std::function<void()> on_reschedule_arg) {
 	auto lock = LockContext();
 	CheckExecutableInternal(*lock);
-	return context->ExecuteTaskInternal(*lock, *this);
+	return context->ExecuteTaskInternal(*lock, *this, std::move(on_reschedule_arg));
 }
 
 void QueryResult::WaitForTask() {
@@ -260,6 +260,22 @@ void QueryResult::Close() {
 		}
 	}
 	context.reset();
+}
+
+unique_ptr<QueryResult> QueryResult::TakeCollectorResult() {
+	if (buffer || HasError() || !context) {
+		return nullptr;
+	}
+	auto owner = context;
+	auto lock = owner->LockContext();
+	if (!IsOpenInternal(*lock)) {
+		Cancelled();
+		context.reset();
+		return nullptr;
+	}
+	auto produced = owner->CompleteDelegatedInternal(*lock, *this);
+	context.reset();
+	return produced;
 }
 
 //===--------------------------------------------------------------------===//
