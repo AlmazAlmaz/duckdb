@@ -51,6 +51,11 @@ unique_ptr<SetStatement> TransformSetSearchPath(const Identifier &name, SetScope
 				return make_set(std::move(wrapped));
 			}
 		}
+		if (expr.GetExpressionType() != ExpressionType::COLUMN_REF) {
+			// on top of PG's grammar, DuckDB allows any expression here and evaluates it: pass it on,
+			// it produces the same comma-joined form current_setting('search_path') renders
+			return make_uniq<SetVariableStatement>(name, std::move(values[0]), scope);
+		}
 		return make_set(serialize(expr));
 	}
 	// Multi-arg: comma-join each PG-quoted element.
@@ -66,13 +71,46 @@ unique_ptr<SetStatement> TransformSetSearchPath(const Identifier &name, SetScope
 
 } // namespace
 
-// ResetStatement <- 'RESET' SetVariableOrSetting
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformResetStatement(PEGTransformer &transformer,
-                                                                        const SettingInfo &set_variable_or_setting) {
-	if (set_variable_or_setting.scope == SetScope::LOCAL) {
-		throw NotImplementedException("RESET LOCAL is not implemented.");
+                                                                        const SettingInfo &reset_target) {
+	// PG-compat: RESET LOCAL is handled by PhysicalReset at execution time
+	// (rejected outside a transaction with the canonical PG error). The
+	// upstream PEG transformer's NotImplemented throw is removed to keep
+	// parity with the v2026.05.18 libpg_query path.
+	return make_uniq<ResetVariableStatement>(reset_target.name, reset_target.scope);
+}
+
+// ResetAliasedSetting <- ('TRANSACTION' 'ISOLATION' 'LEVEL') / ('SESSION' 'AUTHORIZATION') / ('TIME' 'ZONE')
+// PG-compat: RESET takes the same multi-word aliases as SHOW. Map each to
+// its underlying GUC name; the case-insensitive setting lookup picks up the
+// canonical-cased registration (TimeZone) on its own.
+SettingInfo PEGTransformerFactory::TransformResetAliasedSetting(PEGTransformer &transformer,
+                                                                ParseResult &choice_result) {
+	auto &first_kw = choice_result.Cast<ListParseResult>().Child<KeywordParseResult>(0).keyword;
+
+	SettingInfo info;
+	if (StringUtil::CIEquals(first_kw, "TRANSACTION")) {
+		info.name = "transaction_isolation";
+	} else if (StringUtil::CIEquals(first_kw, "SESSION")) {
+		info.name = "session_authorization";
+	} else {
+		info.name = "timezone";
 	}
-	return make_uniq<ResetVariableStatement>(set_variable_or_setting.name, set_variable_or_setting.scope);
+	return info;
+}
+
+// ResetAll <- ('LOCAL' 'ALL') / 'ALL'
+// PhysicalReset::GetDataInternal dispatches to ResetAll(...) when the
+// target name is empty, so emit a SettingInfo with an empty name. The
+// LOCAL variant flags scope=LOCAL so PhysicalReset can transaction-bound it.
+SettingInfo PEGTransformerFactory::TransformResetAll(PEGTransformer &transformer, ParseResult &parse_result) {
+	SettingInfo result;
+	result.name = "";
+	if (parse_result.type == ParseResultType::LIST) {
+		// First alternative: 'LOCAL' 'ALL' keywords.
+		result.scope = SetScope::LOCAL;
+	}
+	return result;
 }
 
 // SetTransactionIsolation <- 'TRANSACTION' 'ISOLATION' 'LEVEL' IsolationLevel
@@ -163,6 +201,30 @@ unique_ptr<SetStatement> PEGTransformerFactory::TransformSetTimeZone(PEGTransfor
 	return make_uniq<SetVariableStatement>("timezone", std::move(zone_value), SetScope::AUTOMATIC);
 }
 
+// SetRole <- 'ROLE' RoleSpec
+// Routes to the `role` extension setting (registered in serenedb's
+// server/query/config_variables.cpp with a NoOverwrite callback so the
+// value flows into session state but doesn't perform real role-switch).
+unique_ptr<SetStatement> PEGTransformerFactory::TransformSetRole(PEGTransformer &transformer,
+                                                                 unique_ptr<ParsedExpression> role_spec) {
+	if (role_spec->GetExpressionClass() == ExpressionClass::DEFAULT) {
+		return make_uniq<ResetVariableStatement>("role", SetScope::AUTOMATIC);
+	}
+	return make_uniq<SetVariableStatement>("role", std::move(role_spec), SetScope::AUTOMATIC);
+}
+
+// SetSessionAuthorization <- 'SESSION' 'AUTHORIZATION' RoleSpec
+// Routes to the `session_authorization` setting. Same NoOverwrite shape as
+// SET ROLE.
+unique_ptr<SetStatement>
+PEGTransformerFactory::TransformSetSessionAuthorization(PEGTransformer &transformer,
+                                                        unique_ptr<ParsedExpression> role_spec) {
+	if (role_spec->GetExpressionClass() == ExpressionClass::DEFAULT) {
+		return make_uniq<ResetVariableStatement>("session_authorization", SetScope::AUTOMATIC);
+	}
+	return make_uniq<SetVariableStatement>("session_authorization", std::move(role_spec), SetScope::AUTOMATIC);
+}
+
 // SetVariable <- VariableScope Identifier
 SettingInfo PEGTransformerFactory::TransformSetVariable(PEGTransformer &transformer, const SetScope &variable_scope,
                                                         const Identifier &identifier) {
@@ -177,9 +239,10 @@ unique_ptr<SetStatement>
 PEGTransformerFactory::TransformStandardAssignment(PEGTransformer &transformer,
                                                    const SettingInfo &set_variable_or_setting,
                                                    vector<unique_ptr<ParsedExpression>> set_assignment) {
-	if (set_variable_or_setting.scope == SetScope::LOCAL) {
-		throw NotImplementedException("SET LOCAL is not implemented.");
-	}
+	// PG-compat: SET LOCAL is enforced at PhysicalSet::SetVariable
+	// (transaction-bound). Don't reject at parse time -- that's a regression
+	// from the upstream PEG transformer; v2026.05.18's libpg_query path
+	// passed the scope through.
 	// PG-compat for serenedb: SET search_path accepts comma-separated lists
 	// and unquoted/string-literal/DEFAULT shapes. Normalize into a single
 	// already-PG-quoted string before producing the SetVariableStatement.

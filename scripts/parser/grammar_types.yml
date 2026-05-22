@@ -80,6 +80,7 @@ SQLStatement:
     - CopyTable
     - CreateStatement
     - DeallocateStatement
+    - DiscardStatement
     - DeleteStatement
     - TruncateStatement
     - DetachStatement
@@ -153,6 +154,8 @@ SetStatement:
     - StandardAssignment
     - SetTransactionIsolation
     - SetSessionCharacteristics
+    - SetRole
+    - SetSessionAuthorization
 
 QueryNode:
   type: "unique_ptr<QueryNode>"
@@ -162,6 +165,8 @@ QueryNode:
     - DescribeSelect
     - ShowTables
     - ShowAllTables
+    - ShowAliasedSetting
+    - ShowAllSettings
     - ShowByName
     - DescribeByName
 
@@ -520,6 +525,7 @@ Expression:
     - ZoneDefault
     - ZoneStringLiteral
     - ZoneIdentifier
+    - RoleSpec
     - DefArg
     - DefArgNull
     - DefArgKeyword
@@ -1038,6 +1044,9 @@ SettingInfo:
     - SetVariableOrSetting
     - SetSetting
     - SetVariable
+    - ResetTarget
+    - ResetAll
+    - ResetAliasedSetting
 
 PartitionSortedOptions:
   type: "PartitionSortedOptions"
@@ -1787,6 +1796,8 @@ IdentifierType:
     - AnalyzeKeyword
     - ColId
     - ColIdOrString
+    - DeallocateTarget
+    - DeallocateAll
     - UsingColumnName
     - ColLabelOrString
     - ColLabelIdentifier
@@ -2014,6 +2025,13 @@ excluded_rules:
   # expression.gram rules kept manual during incremental transformer generation migration
   - OverClause
   - PrefixExpression
+  - DiscardTarget
+  - ShowSettingAlias
+  - ChainClause
+  - NoChain
+  - DeferrableClause
+  - Deferrable
+  - NotDeferrable
 
 MatchRecognizeClauseEntry:
   type: "MatchRecognizeClause"
