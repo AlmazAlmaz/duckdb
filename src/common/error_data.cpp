@@ -15,7 +15,8 @@ namespace duckdb {
 ErrorData::ErrorData() : initialized(false), type(ExceptionType::INVALID) {
 }
 
-ErrorData::ErrorData(const std::exception &ex) : ErrorData(ex.what()) {
+ErrorData::ErrorData(const std::exception &ex, const std::exception_ptr &ptr) : ErrorData(ex.what()) {
+	this->exception_ptr = ptr;
 }
 
 ErrorData::ErrorData(ExceptionType type, const string &message)
@@ -83,11 +84,16 @@ string ErrorData::ConstructFinalMessage() const {
 
 void ErrorData::Throw(const string &prepended_message) const {
 	D_ASSERT(initialized);
-	if (!prepended_message.empty()) {
-		string new_message = prepended_message + raw_message;
-		throw Exception(extra_info, type, new_message);
+	try {
+		if (exception_ptr) {
+			std::rethrow_exception(exception_ptr);
+		}
+	} catch (const Exception &) {
+		if (prepended_message.empty()) {
+			throw;
+		}
 	}
-	throw Exception(extra_info, type, raw_message);
+	throw Exception(extra_info, type, prepended_message + raw_message);
 }
 
 const ExceptionType &ErrorData::Type() const {
