@@ -48,6 +48,8 @@ public:
 
 	void Checkpoint(ClientContext &context, bool force = false) override;
 
+	void CheckTruncate(DuckTransaction &transaction, DataTable &table);
+
 	VisibilityBound LowestVisibilityBound() const {
 		return lowest_visibility_bound;
 	}

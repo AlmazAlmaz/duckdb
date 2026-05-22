@@ -55,6 +55,8 @@ public:
 	Identifier GetTableName();
 	void SetTableName(Identifier name);
 
+	atomic<transaction_t> last_append_commit {0};
+
 private:
 	//! The database instance of the table
 	AttachedDatabase &db;
