@@ -266,6 +266,7 @@ CreateTypeInfo:
   by_value: true
   rules:
     - CreateType
+    - CreateTypeComposite
     - CreateTypeFromType
     - EnumSelectType
     - EnumStringLiteralList
