@@ -12,6 +12,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/column_index.hpp"
+#include "duckdb/common/insertion_order_preserving_map.hpp"
 #include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/exception/binder_exception.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
@@ -176,12 +177,22 @@ private:
 	void AddBinding(unique_ptr<Binding> binding);
 	static string AmbiguityException(const BindingAlias &alias, const vector<reference<Binding>> &bindings);
 
+public:
+	//! Starts a new top-level FROM item (the operands of an implicit, i.e. comma, cross join). `SELECT *`
+	//! expands one item at a time, so a USING column merged inside one item stays with that item.
+	void BeginFromItem() {
+		from_item_counter++;
+	}
+
 private:
 	Binder &binder;
 	//! The list of bindings in insertion order
 	vector<unique_ptr<Binding>> bindings_list;
-	//! The set of columns used in USING join conditions
-	identifier_map_t<reference_set_t<UsingColumnSet>> using_columns;
+	//! The FROM item each entry of bindings_list belongs to
+	vector<idx_t> binding_from_item;
+	idx_t from_item_counter = 0;
+	//! The set of columns used in USING join conditions, in USING clause order
+	InsertionOrderPreservingMap<reference_set_t<UsingColumnSet>, Identifier> using_columns;
 	//! The set of CTE bindings
 	vector<unique_ptr<CTEBinding>> cte_bindings;
 };
