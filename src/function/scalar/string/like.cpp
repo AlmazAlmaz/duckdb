@@ -232,18 +232,7 @@ bool TemplatedLikeOperator(const char *sdata, idx_t slen, const char *pdata, idx
 		pidx = retry_pidx;
 		sidx = ++retry_sidx;
 	}
-	// a trailing '%' only matches an empty suffix when it is not escaped
-	while (pidx < plen) {
-		if (HAS_ESCAPE && pdata[pidx] == escape) {
-			if (pidx + 1 == plen) {
-				throw SyntaxException("Like pattern must not end with escape character!");
-			}
-			// the escape sequence needs a character to match against, and there is none left
-			break;
-		}
-		if (pdata[pidx] != PERCENTAGE) {
-			break;
-		}
+	while (pidx < plen && pdata[pidx] == PERCENTAGE && !(HAS_ESCAPE && escape == PERCENTAGE)) {
 		pidx++;
 	}
 	return pidx == plen && sidx == slen;
@@ -321,7 +310,7 @@ struct LikeMatcher : public FunctionData {
 		}
 	}
 
-	static unique_ptr<LikeMatcher> CreateLikeMatcher(string like_pattern, char escape = '\0') {
+	static unique_ptr<LikeMatcher> CreateLikeMatcher(string like_pattern, char escape = '\\') {
 		vector<LikeSegment> segments;
 		idx_t last_non_pattern = 0;
 		bool has_start_percentage = false;
@@ -435,7 +424,7 @@ struct NotLikeEscapeOperator {
 struct LikeOperator {
 	template <class TA, class TB, class TR>
 	static inline TR Operation(TA str, TB pattern) {
-		return LikeOperatorFunction(str, pattern);
+		return LikeOperatorFunction(str, pattern, '\\');
 	}
 };
 
@@ -489,14 +478,14 @@ struct NotILikeEscapeOperator {
 struct ILikeOperator {
 	template <class TA, class TB, class TR>
 	static inline TR Operation(TA str, TB pattern) {
-		return ILikeOperatorFunction(str, pattern);
+		return ILikeOperatorFunction(str, pattern, '\\');
 	}
 };
 
 struct NotLikeOperator {
 	template <class TA, class TB, class TR>
 	static inline TR Operation(TA str, TB pattern) {
-		return !LikeOperatorFunction(str, pattern);
+		return !LikeOperatorFunction(str, pattern, '\\');
 	}
 };
 
@@ -510,8 +499,8 @@ struct NotILikeOperator {
 struct ILikeOperatorASCII {
 	template <class TA, class TB, class TR>
 	static inline TR Operation(TA str, TB pattern) {
-		return TemplatedLikeOperator<'%', '_', false, ASCIILCaseReader>(str.GetData(), str.GetSize(), pattern.GetData(),
-		                                                                pattern.GetSize(), '\0');
+		return TemplatedLikeOperator<'%', '_', true, ASCIILCaseReader>(str.GetData(), str.GetSize(), pattern.GetData(),
+		                                                               pattern.GetSize(), '\\');
 	}
 };
 
@@ -645,7 +634,7 @@ void ILikeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 			}
 			LowerCase(str.GetData(), str.GetSize(), scratch.get());
 			string_t str_lcase(scratch.get(), UnsafeNumericCast<uint32_t>(str_llength));
-			bool match = matcher ? matcher->Match(str_lcase) : LikeOperatorFunction(str_lcase, pat_lcase);
+			bool match = matcher ? matcher->Match(str_lcase) : LikeOperatorFunction(str_lcase, pat_lcase, '\\');
 			return INVERT ? !match : match;
 		});
 		return;
@@ -764,7 +753,7 @@ ScalarFunction LikeEscapeFun::GetFunction() {
 // `regexp_full_match(x, similar_to_escape(y))`, so this translation has to live
 // beside the parser rather than in a server-side function set -- otherwise the
 // rewrite emits a call that a plain DuckDB has no way to resolve.
-static string SimilarToRegex(const string_t &pattern_str, char escape_char) {
+static string SimilarToRegex(const string_t &pattern_str, std::string_view escape) {
 	auto pattern = pattern_str.GetData();
 	auto plen = pattern_str.GetSize();
 
@@ -797,7 +786,7 @@ static string SimilarToRegex(const string_t &pattern_str, char escape_char) {
 				charclass_pos = 3;
 			}
 			after_escape = false;
-		} else if (pchar == escape_char) {
+		} else if (!escape.empty() && pchar == escape.front()) {
 			after_escape = true;
 		} else if (bracket_depth > 0) {
 			// inside a bracket expression the SIMILAR TO metacharacters are literal
@@ -839,17 +828,18 @@ static string SimilarToRegex(const string_t &pattern_str, char escape_char) {
 
 static void SimilarToEscapeFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t pattern) {
-		return StringVector::AddString(result, SimilarToRegex(pattern, '\\'));
+		return StringVector::AddString(result, SimilarToRegex(pattern, "\\"));
 	});
 }
 
 static void SimilarToEscapeWithEscapeFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, string_t>(
 	    args.data[0], args.data[1], result, args.size(), [&](string_t pattern, string_t escape) {
-		    if (escape.GetSize() != 1) {
+		    if (escape.GetSize() > 1) {
 			    throw InvalidInputException("invalid escape string: must be one character");
 		    }
-		    return StringVector::AddString(result, SimilarToRegex(pattern, escape.GetData()[0]));
+		    return StringVector::AddString(
+		        result, SimilarToRegex(pattern, std::string_view {escape.GetData(), escape.GetSize()}));
 	    });
 }
 
