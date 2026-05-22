@@ -343,6 +343,9 @@ AddColumnEntry PEGTransformerFactory::TransformAddColumnEntry(
 	}
 	if (column_constraint) {
 		for (auto &constraint : *column_constraint) {
+			if (!constraint.constraint_type_info.name.empty()) {
+				throw ParserException("Named constraints on a column added by ALTER TABLE are not supported yet");
+			}
 			auto constraint_type =
 			    constraint.constraint ? constraint.constraint->type : constraint.constraint_type_info.type;
 			if (constraint.constraint_name == "DefaultValue") {
@@ -390,13 +393,6 @@ unique_ptr<AlterTableInfo> PEGTransformerFactory::TransformDropColumn(
 	auto result = make_uniq<RemoveFieldInfo>(AlterEntryData(), nested_column_name->ColumnNames(), if_exists_value,
 	                                         drop_behavior_value);
 	return std::move(result);
-}
-
-unique_ptr<AlterTableInfo> PEGTransformerFactory::TransformDropConstraint(PEGTransformer &transformer,
-                                                                          const optional<bool> &if_exists,
-                                                                          const Identifier &identifier,
-                                                                          const optional<bool> &drop_behavior) {
-	throw NotImplementedException("No support for that ALTER TABLE option yet!");
 }
 
 unique_ptr<AlterTableInfo>
@@ -497,6 +493,22 @@ unique_ptr<AlterTableInfo> PEGTransformerFactory::TransformResetPartitionedBy(PE
 unique_ptr<AlterTableInfo> PEGTransformerFactory::TransformAddConstraint(PEGTransformer &transformer,
                                                                          unique_ptr<Constraint> top_level_constraint) {
 	return make_uniq<AddConstraintInfo>(AlterEntryData(), std::move(top_level_constraint));
+}
+
+unique_ptr<AlterTableInfo> PEGTransformerFactory::TransformDropConstraint(PEGTransformer &transformer,
+                                                                          const optional<bool> &if_exists,
+                                                                          const Identifier &identifier,
+                                                                          const optional<bool> &drop_behavior) {
+	bool cascade = drop_behavior.has_value() && *drop_behavior;
+	return make_uniq<DropConstraintInfo>(AlterEntryData(), identifier.GetIdentifierName(), if_exists.has_value(),
+	                                     cascade);
+}
+
+unique_ptr<AlterTableInfo> PEGTransformerFactory::TransformRenameConstraint(PEGTransformer &transformer,
+                                                                            const Identifier &identifier,
+                                                                            const Identifier &identifier_1) {
+	return make_uniq<RenameConstraintInfo>(AlterEntryData(), identifier.GetIdentifierName(),
+	                                       identifier_1.GetIdentifierName());
 }
 
 unique_ptr<AlterTableInfo> PEGTransformerFactory::TransformSetSortedBy(PEGTransformer &transformer,

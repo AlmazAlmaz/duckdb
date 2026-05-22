@@ -162,14 +162,19 @@ PEGTransformerFactory::TransformCreateTableColumnList(PEGTransformer &transforme
 			for (auto &constraint : column_result.constraints) {
 				result.constraints.push_back(std::move(constraint));
 			}
-			for (auto constraint_type : column_result.constraint_types) {
+			for (auto &constraint_type : column_result.constraint_types) {
+				unique_ptr<Constraint> made;
 				if (constraint_type.type == ConstraintType::NOT_NULL) {
-					result.constraints.push_back(make_uniq<NotNullConstraint>(column_index));
+					made = make_uniq<NotNullConstraint>(column_index);
 				} else if (constraint_type.type == ConstraintType::UNIQUE) {
-					result.constraints.push_back(
-					    make_uniq<UniqueConstraint>(column_index, column_result.column_definition.GetName(),
-					                                constraint_type.is_primary_key, constraint_type.check_mode));
+					made = make_uniq<UniqueConstraint>(column_index, column_result.column_definition.GetName(),
+					                                   constraint_type.is_primary_key, constraint_type.check_mode);
 				}
+				if (!made) {
+					continue;
+				}
+				made->constraint_name = std::move(constraint_type.name);
+				result.constraints.push_back(std::move(made));
 			}
 			result.columns.AddColumn(std::move(column_result.column_definition));
 		} else {
@@ -225,8 +230,7 @@ string PEGTransformerFactory::TransformDotColLabel(PEGTransformer &transformer, 
 
 ConstraintColumnDefinition PEGTransformerFactory::TransformColumnDefinition(
     PEGTransformer &transformer, const Identifier &identifier, const optional<LogicalType> &type,
-    optional<GeneratedColumnDefinition> generated_column, const bool &has_result,
-    optional<vector<ColumnConstraintEntry>> column_constraint) {
+    optional<GeneratedColumnDefinition> generated_column, optional<vector<ColumnConstraintEntry>> column_constraint) {
 	auto qualified_name = QualifiedName(identifier);
 	bool has_type = type.has_value();
 	bool has_generated = generated_column && generated_column->expr != nullptr;
@@ -334,9 +338,18 @@ ColumnConstraintEntry PEGTransformerFactory::TransformDefaultValue(PEGTransforme
 	return entry;
 }
 
+Identifier PEGTransformerFactory::TransformConstraintNameClause(PEGTransformer &transformer,
+                                                                const Identifier &identifier) {
+	return identifier;
+}
+
 unique_ptr<Constraint>
-PEGTransformerFactory::TransformTopLevelConstraint(PEGTransformer &transformer, const bool &has_result,
+PEGTransformerFactory::TransformTopLevelConstraint(PEGTransformer &transformer,
+                                                   const optional<Identifier> &constraint_name_clause,
                                                    unique_ptr<Constraint> top_level_constraint_list) {
+	if (constraint_name_clause) {
+		top_level_constraint_list->constraint_name = constraint_name_clause->GetIdentifierName();
+	}
 	return top_level_constraint_list;
 }
 
@@ -358,6 +371,19 @@ PEGTransformerFactory::TransformTopUniqueConstraint(PEGTransformer &transformer,
                                                     const optional<ConstraintCheckMode> &constraint_timing) {
 	auto check_mode = constraint_timing.value_or(ConstraintCheckMode::DEFAULT);
 	return make_uniq<UniqueConstraint>(StringsToIdentifiers(column_id_list), false, check_mode);
+}
+
+ColumnConstraintEntry
+PEGTransformerFactory::TransformNamedColumnConstraint(PEGTransformer &transformer,
+                                                      const Identifier &constraint_name_clause,
+                                                      ColumnConstraintEntry column_constraint_element) {
+	string name(constraint_name_clause.GetIdentifierName());
+	if (column_constraint_element.constraint) {
+		column_constraint_element.constraint->constraint_name = std::move(name);
+	} else if (column_constraint_element.constraint_type_info.type != ConstraintType::INVALID) {
+		column_constraint_element.constraint_type_info.name = std::move(name);
+	}
+	return column_constraint_element;
 }
 
 ColumnConstraintEntry PEGTransformerFactory::TransformCheckConstraint(PEGTransformer &transformer,
