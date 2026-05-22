@@ -5,6 +5,10 @@ TopLevelStatement <- Statement? (';'+ / EndOfInput)
 Statement <-
 	ExternalResourceStatement /
 	ExtensionRepositoryStatement /
+	CreateDatabaseStatement /
+	DropDatabaseStatement /
+	CreateTSDictionaryStatement /
+	DropTSDictionaryStatement /
 	CreateStatement /
 	SelectStatement /
 	SetStatement /
