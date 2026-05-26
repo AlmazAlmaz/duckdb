@@ -189,7 +189,7 @@ optional_ptr<Catalog> MetaTransaction::CatalogLogForCommit() {
 			continue;
 		}
 		auto &transaction = entry->second.transaction.Cast<DuckTransaction>();
-		if (!transaction.ChangesMade()) {
+		if (!transaction.ChangesMade() && !transaction.HasReplicationLsns()) {
 			continue;
 		}
 		if (!db.GetCatalog().UsesCatalogLog()) {
@@ -197,7 +197,8 @@ optional_ptr<Catalog> MetaTransaction::CatalogLogForCommit() {
 		}
 		writer = db;
 		writers++;
-		catalog_changes = catalog_changes || transaction.catalog_version >= TRANSACTION_ID_START;
+		catalog_changes =
+		    catalog_changes || transaction.catalog_version >= TRANSACTION_ID_START || transaction.HasReplicationLsns();
 	}
 	if ((!catalog_changes && writers < 2) || !writer->GetCatalog().CatalogLog()) {
 		return nullptr;
@@ -328,6 +329,7 @@ ErrorData MetaTransaction::CommitThroughCatalogLog(Catalog &catalog) {
 				auto &db = transaction.manager.GetDB();
 				if (db.GetCatalog().UsesCatalogLog()) {
 					duck_transaction->prepared->sequences = duck_transaction->ReserveSequenceUsage(catalog_log);
+					duck_transaction->WriteReplicationLsns(catalog_log);
 				}
 			}
 			if (!prepared.empty()) {
@@ -358,6 +360,7 @@ ErrorData MetaTransaction::CommitThroughCatalogLog(Catalog &catalog) {
 		for (auto &value : duck_transaction->prepared->sequences) {
 			value.entry->MarkReserved(value);
 		}
+		duck_transaction->ApplyReplicationLsns();
 		duck_transaction->manager.Cast<DuckTransactionManager>().DecidePreparedTransaction(
 		    *duck_transaction, catalog_log_ref, decision_offset);
 	}
@@ -370,6 +373,13 @@ ErrorData MetaTransaction::CommitThroughCatalogLog(Catalog &catalog) {
 			for (auto &participant : participants) {
 				ValidChecker::Invalidate(participant.get().transaction.manager.GetDB(),
 				                         "Failed to sync the catalog log after committing: " + error.RawMessage());
+			}
+		}
+	}
+	if (!error.HasError()) {
+		for (auto &participant : participants) {
+			if (auto duck_transaction = PreparedParticipant(participant.get().transaction)) {
+				duck_transaction->ApplyRelationSyncs();
 			}
 		}
 	}

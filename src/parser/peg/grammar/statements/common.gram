@@ -57,6 +57,8 @@ Statement <-
 	MergeIntoStatement /
 	ConnectStatement /
 	DisconnectStatement /
+	CreatePublicationStatement /
+	CreateSubscriptionStatement /
 	ListenStatement /
 	NotifyStatement /
 	UnlistenStatement /

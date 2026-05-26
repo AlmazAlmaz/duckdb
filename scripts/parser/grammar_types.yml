@@ -102,6 +102,8 @@ SQLStatement:
     - DetachStatement
     - DisconnectStatement
     - DropStatement
+    - CreatePublicationStatement
+    - CreateSubscriptionStatement
     - ExecuteStatement
     - ExplainStatement
     - ExplainableStatements
@@ -2142,6 +2144,11 @@ excluded_rules:
   - CharacterType
   - IntervalNumber
   - AtTimeZoneOperator
+  - PublicationFor
+  - PublicationForAllTables
+  - PublicationForTable
+  - SubscriptionConnection
+  - SubscriptionPublication
   - UsingSample
   - TableSample
   - NamedParameterAssignment

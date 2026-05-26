@@ -84,6 +84,8 @@ vector<Identifier> DependencyManager::GetSchemaPath(const CatalogEntry &entry) {
 	case CatalogType::ROLE_ENTRY:
 	case CatalogType::DATABASE_ENTRY:
 	case CatalogType::FOREIGN_SERVER_ENTRY:
+	case CatalogType::SUBSCRIPTION_ENTRY:
+	case CatalogType::REPLICATION_ORIGIN_ENTRY:
 		return vector<Identifier>();
 	default:
 		return entry.ParentSchemaPath();
@@ -97,6 +99,8 @@ vector<Identifier> DependencyManager::GetSchemaPath(CatalogTransaction transacti
 	case CatalogType::ROLE_ENTRY:
 	case CatalogType::DATABASE_ENTRY:
 	case CatalogType::FOREIGN_SERVER_ENTRY:
+	case CatalogType::SUBSCRIPTION_ENTRY:
+	case CatalogType::REPLICATION_ORIGIN_ENTRY:
 		return vector<Identifier>();
 	default:
 		return entry.ParentSchemaPath(transaction);
@@ -575,6 +579,12 @@ static string EntryToString(const CatalogEntryInfo &info) {
 	}
 	case CatalogType::FOREIGN_SERVER_ENTRY: {
 		return StringUtil::Format("server %s", info.name);
+	}
+	case CatalogType::SUBSCRIPTION_ENTRY: {
+		return StringUtil::Format("subscription %s", info.name);
+	}
+	case CatalogType::REPLICATION_ORIGIN_ENTRY: {
+		return StringUtil::Format("replication origin %s", info.name);
 	}
 	default:
 		throw InternalException("CatalogType not handled in EntryToString (DependencyManager) for %s",
