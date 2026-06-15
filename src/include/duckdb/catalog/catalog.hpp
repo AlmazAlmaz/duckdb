@@ -24,6 +24,10 @@
 #include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/types/string.hpp"
+#include "duckdb/storage/storage_index.hpp"
+#include "duckdb/storage/table/row_group_collection.hpp"
+#include "duckdb/storage/table/table_index_list.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
 
 #include <functional>
 
@@ -136,6 +140,11 @@ public:
 		return false;
 	}
 
+	virtual bool AppendLocalIndexes(DuckTransaction &transaction, TableIndexList &index_list,
+	                                RowGroupCollection &source, const vector<StorageIndex> &mapped_column_ids,
+	                                row_t row_start, ErrorData &error) {
+		return false;
+	}
 	virtual void Initialize(bool load_builtin) = 0;
 	virtual void Initialize(optional_ptr<ClientContext> context, bool load_builtin);
 	virtual void FinalizeLoad(optional_ptr<ClientContext> context);
