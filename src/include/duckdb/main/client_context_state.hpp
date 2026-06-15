@@ -53,6 +53,9 @@ public:
 	//! reverting SET LOCAL values for custom-impl settings like search_path).
 	virtual void TransactionPreCommit(MetaTransaction &transaction, ClientContext &context) {
 	}
+	virtual void TransactionPreCheckpoint(AttachedDatabase &db, ClientContext &context, idx_t wal_generation,
+	                                      idx_t wal_end_offset) {
+	}
 	virtual void TransactionPreRollback(MetaTransaction &transaction, ClientContext &context,
 	                                    optional_ptr<ErrorData> error) {
 	}

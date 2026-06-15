@@ -43,6 +43,9 @@ public:
 	virtual void OnCheckpointStart(AttachedDatabase &db, CheckpointOptions checkpoint_options) {
 	}
 
+	virtual void OnCheckpointBeforeHeader(AttachedDatabase &db, CheckpointOptions checkpoint_options) {
+	}
+
 	virtual void OnCheckpointEnd(AttachedDatabase &db, CheckpointOptions checkpoint_options) {
 	}
 
