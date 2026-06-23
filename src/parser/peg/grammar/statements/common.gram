@@ -43,6 +43,9 @@ Statement <-
 	MergeIntoStatement /
 	ConnectStatement /
 	DisconnectStatement /
+	ListenStatement /
+	NotifyStatement /
+	UnlistenStatement /
 	ExpressionStatement
 
 AnalyzeKeyword <- 'ANALYZE' / 'ANALYSE'
