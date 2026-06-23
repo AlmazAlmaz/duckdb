@@ -47,7 +47,22 @@ ExtensionCallbackManager &ExtensionCallbackManager::Get(DatabaseInstance &db) {
 	return DBConfig::GetConfig(db).GetCallbackManager();
 }
 
-ExtensionCallbackManager::ExtensionCallbackManager() : callback_registry(make_shared_ptr<ExtensionCallbackRegistry>()) {
+ExtensionCallbackManager::ExtensionCallbackManager() {
+	registry_versions.push_back(make_uniq<ExtensionCallbackRegistry>());
+	callback_registry.store(registry_versions.back().get(), std::memory_order_release);
+}
+
+ExtensionCallbackRegistry &ExtensionCallbackManager::NextVersion() {
+	registry_versions.push_back(make_uniq<ExtensionCallbackRegistry>(Current()));
+	return *registry_versions.back();
+}
+
+void ExtensionCallbackManager::Publish(ExtensionCallbackRegistry &registry) {
+	callback_registry.store(&registry, std::memory_order_release);
+}
+
+const ExtensionCallbackRegistry &ExtensionCallbackManager::Current() const {
+	return *callback_registry.load(std::memory_order_acquire);
 }
 ExtensionCallbackManager::~ExtensionCallbackManager() {
 }
@@ -103,50 +118,48 @@ void ExtensionCallbackManager::Register(shared_ptr<DialectExtension> extension) 
 
 void ExtensionCallbackManager::Register(PlannerExtension extension) {
 	lock_guard<mutex> guard(registry_lock);
-	auto new_registry = make_shared_ptr<ExtensionCallbackRegistry>(*callback_registry);
-	new_registry->planner_extensions.push_back(std::move(extension));
-	callback_registry.atomic_store(new_registry);
+	auto &new_registry = NextVersion();
+	new_registry.planner_extensions.push_back(std::move(extension));
+	Publish(new_registry);
 }
 
 void ExtensionCallbackManager::Register(OptimizerExtension extension) {
 	lock_guard<mutex> guard(registry_lock);
-	auto new_registry = make_shared_ptr<ExtensionCallbackRegistry>(*callback_registry);
-	new_registry->optimizer_extensions.push_back(std::move(extension));
-	callback_registry.atomic_store(new_registry);
+	auto &new_registry = NextVersion();
+	new_registry.optimizer_extensions.push_back(std::move(extension));
+	Publish(new_registry);
 }
 
 void ExtensionCallbackManager::Register(shared_ptr<OperatorExtension> extension) {
 	lock_guard<mutex> guard(registry_lock);
-	auto new_registry = make_shared_ptr<ExtensionCallbackRegistry>(*callback_registry);
-	new_registry->operator_extensions.push_back(std::move(extension));
-	callback_registry.atomic_store(new_registry);
+	auto &new_registry = NextVersion();
+	new_registry.operator_extensions.push_back(std::move(extension));
+	Publish(new_registry);
 }
 
 void ExtensionCallbackManager::Register(const string &name, shared_ptr<StorageExtension> extension) {
 	lock_guard<mutex> guard(registry_lock);
-	auto new_registry = make_shared_ptr<ExtensionCallbackRegistry>(*callback_registry);
-	new_registry->storage_extensions[name] = std::move(extension);
-	callback_registry.atomic_store(new_registry);
+	auto &new_registry = NextVersion();
+	new_registry.storage_extensions[name] = std::move(extension);
+	Publish(new_registry);
 }
 
 void ExtensionCallbackManager::Register(shared_ptr<ExtensionCallback> extension) {
 	lock_guard<mutex> guard(registry_lock);
-	auto new_registry = make_shared_ptr<ExtensionCallbackRegistry>(*callback_registry);
-	new_registry->extension_callbacks.push_back(std::move(extension));
-	callback_registry.atomic_store(new_registry);
+	auto &new_registry = NextVersion();
+	new_registry.extension_callbacks.push_back(std::move(extension));
+	Publish(new_registry);
 }
 
 void ExtensionCallbackManager::Register(const string &name, shared_ptr<ProfilerExtension> extension) {
 	lock_guard<mutex> guard(registry_lock);
-	auto new_registry = make_shared_ptr<ExtensionCallbackRegistry>(*callback_registry);
-	new_registry->profiler_extensions[name] = std::move(extension);
-	callback_registry.atomic_store(new_registry);
+	auto &new_registry = NextVersion();
+	new_registry.profiler_extensions[name] = std::move(extension);
+	Publish(new_registry);
 }
 
 template <class T>
-ExtensionCallbackIteratorHelper<T>::ExtensionCallbackIteratorHelper(
-    const vector<T> &vec, shared_ptr<ExtensionCallbackRegistry> callback_registry)
-    : vec(vec), callback_registry(std::move(callback_registry)) {
+ExtensionCallbackIteratorHelper<T>::ExtensionCallbackIteratorHelper(const vector<T> &vec) : vec(vec) {
 }
 
 template <class T>
@@ -154,9 +167,7 @@ ExtensionCallbackIteratorHelper<T>::~ExtensionCallbackIteratorHelper() {
 }
 
 ExtensionCallbackIteratorHelper<shared_ptr<OperatorExtension>> ExtensionCallbackManager::OperatorExtensions() const {
-	auto registry = callback_registry.atomic_load();
-	auto &operator_extensions = registry->operator_extensions;
-	return ExtensionCallbackIteratorHelper<shared_ptr<OperatorExtension>>(operator_extensions, std::move(registry));
+	return ExtensionCallbackIteratorHelper<shared_ptr<OperatorExtension>>(Current().operator_extensions);
 }
 
 case_insensitive_map_t<shared_ptr<GrammarExtension>> ExtensionCallbackManager::GrammarExtensions() const {
@@ -165,13 +176,11 @@ case_insensitive_map_t<shared_ptr<GrammarExtension>> ExtensionCallbackManager::G
 }
 
 ExtensionCallbackIteratorHelper<OptimizerExtension> ExtensionCallbackManager::OptimizerExtensions() const {
-	auto registry = callback_registry.atomic_load();
-	auto &optimizer_extensions = registry->optimizer_extensions;
-	return ExtensionCallbackIteratorHelper<OptimizerExtension>(optimizer_extensions, std::move(registry));
+	return ExtensionCallbackIteratorHelper<OptimizerExtension>(Current().optimizer_extensions);
 }
 
 ExtensionCallbackIteratorHelper<ParserExtension> ExtensionCallbackManager::ParserExtensions() const {
-	auto registry = callback_registry.atomic_load();
+	auto registry = callback_registry.plain_load();
 	auto &parser_extensions = registry->parser_extensions;
 	return ExtensionCallbackIteratorHelper<ParserExtension>(parser_extensions, std::move(registry));
 }
@@ -183,15 +192,11 @@ ExtensionCallbackIteratorHelper<shared_ptr<DialectExtension>> ExtensionCallbackM
 }
 
 ExtensionCallbackIteratorHelper<PlannerExtension> ExtensionCallbackManager::PlannerExtensions() const {
-	auto registry = callback_registry.atomic_load();
-	auto &planner_extensions = registry->planner_extensions;
-	return ExtensionCallbackIteratorHelper<PlannerExtension>(planner_extensions, std::move(registry));
+	return ExtensionCallbackIteratorHelper<PlannerExtension>(Current().planner_extensions);
 }
 
 ExtensionCallbackIteratorHelper<shared_ptr<ExtensionCallback>> ExtensionCallbackManager::ExtensionCallbacks() const {
-	auto registry = callback_registry.atomic_load();
-	auto &extension_callbacks = registry->extension_callbacks;
-	return ExtensionCallbackIteratorHelper<shared_ptr<ExtensionCallback>>(extension_callbacks, std::move(registry));
+	return ExtensionCallbackIteratorHelper<shared_ptr<ExtensionCallback>>(Current().extension_callbacks);
 }
 
 optional_ptr<GrammarExtension> ExtensionCallbackManager::FindGrammarExtension(const string &name) const {
@@ -204,25 +209,25 @@ optional_ptr<GrammarExtension> ExtensionCallbackManager::FindGrammarExtension(co
 }
 
 optional_ptr<StorageExtension> ExtensionCallbackManager::FindStorageExtension(const string &name) const {
-	auto registry = callback_registry.atomic_load();
-	auto entry = registry->storage_extensions.find(name);
-	if (entry == registry->storage_extensions.end()) {
+	auto &registry = Current();
+	auto entry = registry.storage_extensions.find(name);
+	if (entry == registry.storage_extensions.end()) {
 		return nullptr;
 	}
 	return entry->second.get();
 }
 
 optional_ptr<ProfilerExtension> ExtensionCallbackManager::FindProfilerExtension(const string &name) const {
-	auto registry = callback_registry.atomic_load();
-	auto entry = registry->profiler_extensions.find(name);
-	if (entry == registry->profiler_extensions.end()) {
+	auto &registry = Current();
+	auto entry = registry.profiler_extensions.find(name);
+	if (entry == registry.profiler_extensions.end()) {
 		return nullptr;
 	}
 	return entry->second.get();
 }
 
 bool ExtensionCallbackManager::HasParserExtensions() const {
-	auto registry = callback_registry.atomic_load();
+	auto registry = callback_registry.plain_load();
 	return !registry->parser_extensions.empty();
 }
 
