@@ -112,7 +112,7 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformTopLevelStatement(Token
 }
 
 PEGTransformerFactory::PEGTransformerFactory(ParsedGrammar &grammar_p) : grammar(grammar_p) {
-	case_insensitive_set_t collapsible_rules;
+	case_insensitive_set_view_t collapsible_rules;
 	//===--------------------------------------------------------------------===//
 	// START GENERATED COLLAPSIBLE RULES
 	//===--------------------------------------------------------------------===//
@@ -152,7 +152,7 @@ PEGTransformerFactory::PEGTransformerFactory(ParsedGrammar &grammar_p) : grammar
 		    [process_info](PEGTransformer &transformer, ParseResult &parse_result) -> unique_ptr<TransformProcess> {
 			    return make_uniq<GeneratedTransformProcess>(transformer, TransformInput {parse_result}, *process_info);
 		    },
-		    collapsible_rules.count(entry.first) > 0);
+		    collapsible_rules.contains(entry.first));
 	}
 }
 

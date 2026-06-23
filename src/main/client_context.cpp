@@ -225,7 +225,7 @@ void ClientContext::Destroy() {
 	CleanupInternal(*lock);
 }
 
-void ClientContext::ProcessError(ErrorData &error, const string &query) const {
+void ClientContext::ProcessError(ErrorData &error, std::string_view query) const {
 	error.FinalizeError();
 	if (Settings::Get<ErrorsAsJSONSetting>(*this)) {
 		error.ConvertErrorToJSON();
@@ -235,7 +235,7 @@ void ClientContext::ProcessError(ErrorData &error, const string &query) const {
 }
 
 template <class T>
-unique_ptr<T> ClientContext::ErrorResult(ErrorData error, const string &query) {
+unique_ptr<T> ClientContext::ErrorResult(ErrorData error, std::string_view query) {
 	bool invalidates_transaction = true;
 	if (!ErrorInvalidatesTransaction(error.Type())) {
 		// standard exceptions don't invalidate the transaction
@@ -515,7 +515,7 @@ ClientContext::PrepareInternal(ClientContextLock &lock, unique_ptr<SQLStatement>
 	parameters.result_eagerness = ResultEagerness::FORCED;
 	auto result = RunStatementInternal(lock, std::move(prepare), parameters, false);
 	result->ThrowIfError();
-	auto entry = client_data->prepared_statements.find(Identifier(name));
+	auto entry = client_data->prepared_statements.find(name);
 	if (entry == client_data->prepared_statements.end()) {
 		throw InternalException("PREPARE succeeded but the prepared statement was not registered");
 	}
@@ -525,7 +525,7 @@ ClientContext::PrepareInternal(ClientContextLock &lock, unique_ptr<SQLStatement>
 
 void ClientContext::RemovePreparedStatement(const string &name) {
 	auto lock = LockContext();
-	client_data->prepared_statements.erase(Identifier(name));
+	client_data->prepared_statements.erase(name);
 }
 
 unique_ptr<PreparedStatement>
@@ -727,7 +727,7 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 	return result;
 }
 
-void ClientContext::LogQueryInternal(ClientContextLock &, const string &query) {
+void ClientContext::LogQueryInternal(ClientContextLock &, std::string_view query) {
 	if (!client_data->log_query_writer) {
 #ifdef DUCKDB_FORCE_QUERY_LOG
 		try {
@@ -742,7 +742,7 @@ void ClientContext::LogQueryInternal(ClientContextLock &, const string &query) {
 #endif
 	}
 	// log query path is set: log the query
-	client_data->log_query_writer->WriteData(const_data_ptr_cast(query.c_str()), query.size());
+	client_data->log_query_writer->WriteData(const_data_ptr_cast(query.data()), query.size());
 	client_data->log_query_writer->WriteData(const_data_ptr_cast("\n"), 1);
 	client_data->log_query_writer->Flush();
 	client_data->log_query_writer->Sync();

@@ -64,6 +64,8 @@
 #include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/tableref/match_recognize_ref.hpp"
 
+#include <span>
+
 namespace duckdb {
 
 // Forward declare
@@ -6161,7 +6163,7 @@ public:
 
 	PEGTransformerFactory(const PEGTransformerFactory &) = delete;
 
-	static const case_insensitive_map_t<const TransformFrameOps *> &GeneratedTransformFrameOps();
+	static std::span<const std::pair<std::string_view, const TransformFrameOps *>> GeneratedTransformFrameOps();
 
 	static string ExtractFormat(const string &file_path);
 	static string ResolveCopyFormat(const string &format, const string &file_path);
