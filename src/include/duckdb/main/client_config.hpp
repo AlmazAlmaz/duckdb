@@ -55,6 +55,9 @@ struct ClientConfig {
 	//! The wait time before showing the progress bar
 	int wait_time = 2000;
 
+	optional_idx threads;
+	optional_idx async_threads;
+
 	//! Force parallelism of small tables, used for testing
 	bool verify_parallelism = false;
 	//! If this context should also try to use the available replacement scans
