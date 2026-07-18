@@ -18,6 +18,7 @@
 namespace duckdb {
 class ExpressionExecutor;
 struct DynamicFilterData;
+struct TableFilterState;
 
 class BoundFunctionExpression;
 class ClientContext;
@@ -46,6 +47,9 @@ public:
 	//! Access a runtime ExpressionFilter, failing fast if a legacy filter somehow reached an active code path.
 	static const ExpressionFilter &GetExpressionFilter(const TableFilter &filter, const char *context);
 	static ExpressionFilter &GetExpressionFilter(TableFilter &filter, const char *context);
+	//! The shared runtime bound of an optional-wrapped dynamic filter expression, null when the
+	//! expression is not one.
+	static shared_ptr<DynamicFilterData> GetOptionalDynamicFilterData(const Expression &expr);
 	//! Build a COMPARE_IN expression over a single-column filter subject.
 	static unique_ptr<Expression> CreateInExpression(unique_ptr<Expression> column, vector<Value> values);
 	//! Build an IS NULL/IS NOT NULL expression over a single-column filter subject.
@@ -92,8 +96,13 @@ public:
 	//! Dynamic filter data under optional wrappers or ANDs
 	static shared_ptr<DynamicFilterData> GetOptionalDynamicFilterData(const TableFilter &filter);
 
+	//! Plan-time statistics checks: walk the expression (used once per filter by the optimizer)
 	FilterPropagateResult CheckStatistics(const BaseStatistics &stats) const;
 	FilterPropagateResult CheckStatistics(ClientContext &context, const BaseStatistics &stats) const;
+	//! Scan-time statistics check through the state's compiled ZonemapChecker (see
+	//! ExpressionFilterState); this is the hot path for per-row-group/segment/group probes
+	FilterPropagateResult CheckStatistics(const BaseStatistics &stats, TableFilterState &state) const;
+
 	string ToString(const string &column_name) const;
 	string DebugToString() const;
 	bool Equals(const ExpressionFilter &other) const;
