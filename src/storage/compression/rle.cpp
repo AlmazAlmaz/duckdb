@@ -1,3 +1,4 @@
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/bitpacking.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/operator/subtract.hpp"
@@ -119,6 +120,12 @@ struct RLEValueCodec<T, true> {
 			}
 		}
 	}
+
+	static T UnpackValue(const_data_ptr_t src, idx_t index, T frame, bitpacking_width_t width) {
+		T value = BitpackingPrimitives::UnPackValue<T>(src, index, width);
+		reinterpret_cast<T_U &>(value) += static_cast<T_U>(frame);
+		return value;
+	}
 };
 
 template <class T>
@@ -144,6 +151,10 @@ struct RLEValueCodec<T, false> {
 
 	static void Unpack(T *dst, const_data_ptr_t src, idx_t count, T frame, bitpacking_width_t width) {
 		memcpy(dst, src, count * sizeof(T));
+	}
+
+	static T UnpackValue(const_data_ptr_t src, idx_t index, T frame, bitpacking_width_t width) {
+		return Load<T>(src + index * sizeof(T));
 	}
 };
 
@@ -603,11 +614,31 @@ struct RLEScanState : public SegmentScanState {
 	}
 
 	void LoadGroup() {
+		LoadValues();
+		LoadCounts();
+	}
+
+	void LoadValues() {
 		idx_t group_start = entry_pos & ~(RLE_GROUP_SIZE - 1);
 		ValueCodec::Unpack(value_window, layout.values + group_start * layout.value_width / 8, RLE_GROUP_SIZE,
 		                   layout.value_frame, layout.value_width);
+		values_loaded = true;
+	}
+
+	void LoadCounts() {
+		idx_t group_start = entry_pos & ~(RLE_GROUP_SIZE - 1);
 		CountCodec::Unpack(count_window, layout.counts + group_start * layout.count_width / 8, RLE_GROUP_SIZE,
 		                   layout.count_frame, layout.count_width);
+	}
+
+	T PackedValue() const {
+		D_ASSERT(layout.packed);
+		if (values_loaded) {
+			return value_window[entry_pos & (RLE_GROUP_SIZE - 1)];
+		}
+		idx_t group_start = entry_pos & ~(RLE_GROUP_SIZE - 1);
+		return ValueCodec::UnpackValue(layout.values + group_start * layout.value_width / 8,
+		                               entry_pos & (RLE_GROUP_SIZE - 1), layout.value_frame, layout.value_width);
 	}
 
 	template <bool PACKED>
@@ -804,6 +835,7 @@ struct RLEScanState : public SegmentScanState {
 
 	T value_window[RLE_GROUP_SIZE];
 	rle_count_t count_window[RLE_GROUP_SIZE];
+	bool values_loaded = false;
 };
 
 template <class T>
@@ -1036,17 +1068,136 @@ void RLEFilter(ColumnSegment &segment, ColumnScanState &state, idx_t vector_coun
 // Fetch
 //===--------------------------------------------------------------------===//
 template <class T>
-void RLEFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result, idx_t result_idx) {
-	D_ASSERT(row_id >= 0);
-	auto row_index = NumericCast<idx_t>(row_id);
-	D_ASSERT(row_index < segment.count);
-	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-	auto handle = buffer_manager.Pin(state.context, segment.GetBlockHandle());
-	RLEScanState<T> scan_state(std::move(handle), segment);
-	scan_state.Skip(segment, row_index);
+struct RLEFetchState : public SegmentScanState {
+	RLEFetchState(BufferHandle handle, ColumnSegment &segment) : scan_state(std::move(handle), segment) {
+	}
 
+	//! Moves the scan state to the row, from the start of the group of runs that holds it when the row is earlier or
+	//! past a group that the scan state reached before, otherwise from the current row
+	void Seek(idx_t target) {
+		auto current_group = scan_state.entry_pos / RLE_GROUP_SIZE;
+		if (target < row || (current_group + 1 < group_rows.size() && group_rows[current_group + 1] <= target)) {
+			auto group_end = std::upper_bound(group_rows.begin(), group_rows.end(), target);
+			auto group = NumericCast<idx_t>(group_end - group_rows.begin()) - 1;
+			scan_state.entry_pos = group * RLE_GROUP_SIZE;
+			scan_state.position_in_entry = 0;
+			if (scan_state.layout.packed && group != current_group) {
+				scan_state.LoadCounts();
+				scan_state.values_loaded = false;
+			}
+			row = group_rows[group];
+		}
+		if (scan_state.layout.packed) {
+			WalkTo<true>(target);
+		} else {
+			WalkTo<false>(target);
+		}
+	}
+
+	//! Walks forward to the row, past the rest of a group of runs at once when the row is not in it
+	template <bool PACKED>
+	void WalkTo(idx_t target) {
+		auto group = scan_state.entry_pos / RLE_GROUP_SIZE;
+		if (group + 1 < group_rows.size()) {
+			D_ASSERT(group_rows[group + 1] > target);
+			WalkInGroup<PACKED>(target);
+			return;
+		}
+		while (true) {
+			while (group_rows.size() <= scan_state.entry_pos / RLE_GROUP_SIZE) {
+				group_rows.push_back(row);
+			}
+			if (scan_state.position_in_entry == 0) {
+				const idx_t lane = scan_state.entry_pos & (RLE_GROUP_SIZE - 1);
+				const idx_t runs =
+				    MinValue<idx_t>(RLE_GROUP_SIZE - lane, scan_state.max_entry_pos - scan_state.entry_pos);
+				idx_t total = 0;
+				for (idx_t r = 0; r < runs; r++) {
+					total += scan_state.template RawCount<PACKED>(scan_state.entry_pos + r);
+				}
+				if (runs > 0 && total <= target - row) {
+					scan_state.template ValidateThrough<PACKED>(scan_state.entry_pos + runs - 1);
+					scan_state.entry_pos += runs;
+					row += total;
+					if (PACKED && scan_state.entry_pos < scan_state.max_entry_pos) {
+						scan_state.LoadCounts();
+						scan_state.values_loaded = false;
+					}
+					continue;
+				}
+				WalkInGroup<PACKED>(target);
+				return;
+			}
+			auto run_length = scan_state.CurrentRunLength();
+			if (row == target) {
+				return;
+			}
+			auto skip_amount = MinValue<idx_t>(target - row, run_length - scan_state.position_in_entry);
+			scan_state.position_in_entry += skip_amount;
+			row += skip_amount;
+			if (scan_state.ExhaustedRun(run_length)) {
+				scan_state.ForwardToNextRun();
+			}
+		}
+	}
+
+	template <bool PACKED>
+	void WalkInGroup(idx_t target) {
+		const idx_t group_end =
+		    MinValue<idx_t>((scan_state.entry_pos / RLE_GROUP_SIZE + 1) * RLE_GROUP_SIZE, scan_state.max_entry_pos);
+		scan_state.template ValidateThrough<PACKED>(group_end - 1);
+		idx_t entry = scan_state.entry_pos;
+		idx_t remaining = scan_state.position_in_entry + (target - row);
+		while (true) {
+			if (entry >= group_end) {
+				ThrowRLERunCountArrayExhausted();
+			}
+			const idx_t run_length = scan_state.template RawCount<PACKED>(entry);
+			if (remaining < run_length) {
+				break;
+			}
+			remaining -= run_length;
+			entry++;
+		}
+		scan_state.entry_pos = entry;
+		scan_state.position_in_entry = remaining;
+		row = target;
+	}
+
+	RLEScanState<T> scan_state;
+	//! The row of the segment the scan state is at
+	idx_t row = 0;
+	idx_t previous_group = DConstants::INVALID_INDEX;
+	//! The first row of each group of runs that the scan state reached: runs are only found by walking them, so a row
+	//! is walked to from the start of its group
+	vector<idx_t> group_rows = {0};
+};
+
+template <class T>
+void RLEFetchRows(ColumnSegment &segment, ColumnFetchState &state, const idx_t *rows, idx_t count, Vector &result,
+                  const SelectionVector &result_sel, idx_t result_offset) {
+	auto &fetch_state = state.GetOrCreateSegmentState<RLEFetchState<T>>(segment, [&]() {
+		auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
+		return make_uniq<RLEFetchState<T>>(buffer_manager.Pin(state.context, segment.GetBlockHandle()), segment);
+	});
+	auto &scan_state = fetch_state.scan_state;
 	auto result_data = FlatVector::GetDataMutable<T>(result);
-	result_data[result_idx] = scan_state.CurrentValue();
+	for (idx_t i = 0; i < count; i++) {
+		fetch_state.Seek(rows[i]);
+		scan_state.CurrentRunLength();
+		if (!scan_state.layout.packed) {
+			result_data[result_offset + result_sel.get_index(i)] = scan_state.Value();
+			continue;
+		}
+		if (!scan_state.values_loaded) {
+			auto group = scan_state.entry_pos / RLE_GROUP_SIZE;
+			if (group == fetch_state.previous_group) {
+				scan_state.LoadValues();
+			}
+			fetch_state.previous_group = group;
+		}
+		result_data[result_offset + result_sel.get_index(i)] = scan_state.PackedValue();
+	}
 }
 
 //===--------------------------------------------------------------------===//
@@ -1057,7 +1208,7 @@ CompressionFunction GetRLEFunction(PhysicalType data_type) {
 	return CompressionFunction(CompressionType::COMPRESSION_RLE, data_type, RLEInitAnalyze<T>, RLEAnalyze<T>,
 	                           RLEFinalAnalyze<T>, RLEInitCompression<T, WRITE_STATISTICS>,
 	                           RLECompress<T, WRITE_STATISTICS>, RLEFinalizeCompress<T, WRITE_STATISTICS>,
-	                           RLEInitScan<T>, RLEScan<T>, RLEScanPartial<T>, RLEFetchRow<T>, RLESkip<T>, nullptr,
+	                           RLEInitScan<T>, RLEScan<T>, RLEScanPartial<T>, RLEFetchRows<T>, RLESkip<T>, nullptr,
 	                           nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, RLESelect<T>,
 	                           RLEFilter<T>);
 }
