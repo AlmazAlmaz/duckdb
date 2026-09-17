@@ -207,6 +207,7 @@ public:
 	AsyncResultsExecutionMode results_execution_mode {AsyncResultsExecutionMode::SYNCHRONOUS};
 	//! Interrupt state of the calling task, so the function might park and wake-up by returning a taskless Blocked res
 	optional_ptr<const InterruptState> interrupt_state;
+	optional_ptr<StateWithBlockableTasks> blockable;
 };
 
 struct TableFunctionPartitionInput {
