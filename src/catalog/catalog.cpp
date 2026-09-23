@@ -705,8 +705,15 @@ vector<CatalogSearchEntry> GetCatalogEntries(CatalogEntryRetriever &retriever, c
 			entries = search_path.GetWithPrecedenceSchemas(context);
 		}
 	} else if (IsInvalidCatalog(catalog)) {
+		const bool builtins_in_system_main =
+		    (schema == "pg_catalog" || (schema == "information_schema" && lookup_type == CatalogType::TYPE_ENTRY)) &&
+		    Catalog::GetCatalog(context, DatabaseManager::GetDefaultDatabase(context)).Compatibility() ==
+		        SqlCompatibility::POSTGRES;
 		auto catalogs = search_path.GetCatalogsForSchema(schema);
 		for (auto &catalog_name : catalogs) {
+			if (builtins_in_system_main && catalog_name == SYSTEM_CATALOG) {
+				entries.emplace_back(catalog_name, DEFAULT_SCHEMA);
+			}
 			entries.emplace_back(catalog_name, schema);
 		}
 		if (entries.empty()) {
@@ -1205,6 +1212,12 @@ CatalogEntryLookup Catalog::TryLookupEntry(CatalogEntryRetriever &retriever, con
 		}
 		if (result.schema) {
 			schemas.insert(*result.schema);
+			if (lookup_info.GetCatalogType() == CatalogType::TABLE_ENTRY && lookup.catalog.IsDuckCatalog() &&
+			    result.schema->LookupEntry(
+			        transaction,
+			        EntryLookupInfo(CatalogType::INDEX_ENTRY, QualifiedName(lookup_info.GetEntryIdentifier())))) {
+				break;
+			}
 		}
 		if (!result.error.HasError()) {
 			all_errors = false;
