@@ -128,7 +128,7 @@ protected:
 	virtual void ReadForeignServer(CatalogTransaction transaction, Deserializer &deserializer);
 
 	virtual void ReadTableData(CatalogTransaction transaction, Deserializer &deserializer,
-	                           BoundCreateTableInfo &bound_info);
+	                           BoundCreateTableInfo &bound_info, MetaBlockPointer table_pointer);
 };
 
 class SingleFileCheckpointReader final : public CheckpointReader {

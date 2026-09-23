@@ -9,12 +9,17 @@
 #pragma once
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/duck_schema_entry.hpp"
+#include "duckdb/catalog/catalog_entry/index_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/standard_entry.hpp"
 #include "duckdb/common/enums/on_create_conflict.hpp"
 #include "duckdb/parser/parsed_data/create_database_info.hpp"
 #include "duckdb/parser/parsed_data/create_foreign_server_info.hpp"
+#include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/parser/parsed_data/create_tokenizer_info.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
+#include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 
 namespace duckdb {
 
@@ -51,6 +56,10 @@ public:
 	                            AlterSchemaInfo &info) override;
 	DUCKDB_API void AlterSchemaEntry(CatalogTransaction transaction, SchemaCatalogEntry &schema,
 	                                 AlterInfo &info) override;
+	DUCKDB_API virtual unique_ptr<IndexCatalogEntry> MakeIndexEntry(DuckSchemaEntry &schema, CreateIndexInfo &info,
+	                                                                CatalogEntry &relation);
+	DUCKDB_API virtual unique_ptr<TableCatalogEntry>
+	MakeTableEntry(CatalogTransaction transaction, DuckSchemaEntry &schema, BoundCreateTableInfo &info);
 	DUCKDB_API virtual unique_ptr<InCatalogEntry> MakeDatabaseEntry(CreateDatabaseInfo &info);
 	DUCKDB_API virtual unique_ptr<InCatalogEntry> MakeForeignServerEntry(CreateForeignServerInfo &info);
 	DUCKDB_API virtual unique_ptr<StandardEntry> MakeTokenizerEntry(DuckSchemaEntry &schema, CreateTokenizerInfo &info);
