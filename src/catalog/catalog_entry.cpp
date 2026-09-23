@@ -5,6 +5,7 @@
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
+#include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_info.hpp"
 
 namespace duckdb {
@@ -34,6 +35,12 @@ void CatalogEntry::SetAsRoot(optional_ptr<CatalogTransaction> transaction) {
 
 // LCOV_EXCL_START
 unique_ptr<CatalogEntry> CatalogEntry::AlterEntry(ClientContext &context, AlterInfo &info) {
+	if (info.type == AlterType::ALTER_PERMISSIONS) {
+		auto result = Copy(context);
+		result->permissions = permissions;
+		info.Cast<AlterPermissionsInfo>().ApplyTo(result->permissions, type, nullptr);
+		return result;
+	}
 	if (auto new_name = info.GetNewName()) {
 		auto result = Copy(context);
 		result->name = *new_name;
@@ -130,6 +137,7 @@ SchemaCatalogEntry &CatalogEntry::ParentSchema(ClientContext &context) const {
 
 unique_ptr<CreateInfo> CatalogEntry::GetSerializedInfo() const {
 	auto info = GetInfo();
+	info->permissions = permissions;
 	info->oid = oid;
 	return info;
 }

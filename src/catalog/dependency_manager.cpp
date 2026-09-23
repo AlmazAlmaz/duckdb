@@ -80,6 +80,7 @@ vector<Identifier> DependencyManager::GetSchemaPath(const CatalogEntry &entry) {
 	switch (entry.type) {
 	case CatalogType::SCHEMA_ENTRY:
 		return entry.Cast<SchemaCatalogEntry>().GetParentSchemaPath();
+	case CatalogType::ROLE_ENTRY:
 	case CatalogType::DATABASE_ENTRY:
 	case CatalogType::FOREIGN_SERVER_ENTRY:
 		return vector<Identifier>();
@@ -529,6 +530,9 @@ static string EntryToString(const CatalogEntryInfo &info) {
 	}
 	case CatalogType::TOKENIZER_ENTRY: {
 		return StringUtil::Format("tokenizer %s", info.name);
+	}
+	case CatalogType::ROLE_ENTRY: {
+		return StringUtil::Format("role %s", info.name);
 	}
 	case CatalogType::FOREIGN_SERVER_ENTRY: {
 		return StringUtil::Format("server %s", info.name);
@@ -1012,8 +1016,15 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 			}
 			break;
 		}
+		case AlterType::REPLACE_DEFINITION: {
+			if (dep.EntryInfo().type != CatalogType::INDEX_ENTRY || old_obj.type == CatalogType::VIEW_ENTRY) {
+				disallow_alter = false;
+			}
+			break;
+		}
 		case AlterType::SET_COLUMN_COMMENT:
-		case AlterType::SET_COMMENT: {
+		case AlterType::SET_COMMENT:
+		case AlterType::ALTER_PERMISSIONS: {
 			disallow_alter = false;
 			break;
 		}

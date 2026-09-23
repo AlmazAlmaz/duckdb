@@ -39,6 +39,7 @@ TypeCatalogEntry::TypeCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schema,
 	this->dependencies = info.dependencies;
 	this->comment = info.comment;
 	this->tags = info.tags;
+	this->permissions = info.permissions;
 	const bool postgres = catalog.Compatibility() == SqlCompatibility::POSTGRES;
 	if (postgres && !internal && user_type.id() == LogicalTypeId::ENUM && !user_type.HasAlias()) {
 		user_type = user_type.WithAlias(name.GetIdentifierName());
@@ -67,6 +68,7 @@ unique_ptr<CreateInfo> TypeCatalogEntry::GetInfo() const {
 	result->dependencies = dependencies;
 	result->comment = comment;
 	result->tags = tags;
+	result->permissions = permissions;
 	result->constructors = constructors;
 	return std::move(result);
 }

@@ -29,6 +29,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/create_database_info.hpp"
 #include "duckdb/parser/parsed_data/create_foreign_server_info.hpp"
+#include "duckdb/parser/parsed_data/create_role_info.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/parser/parsed_data/create_tokenizer_info.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -132,7 +133,7 @@ unique_ptr<TableDataWriter> SingleFileCheckpointWriter::GetTableDataWriter(Table
 
 static catalog_entry_vector_t GetCatalogEntries(DuckCatalog &catalog, vector<reference<SchemaCatalogEntry>> &schemas) {
 	catalog_entry_vector_t entries;
-	for (auto type : {CatalogType::DATABASE_ENTRY, CatalogType::FOREIGN_SERVER_ENTRY}) {
+	for (auto type : {CatalogType::ROLE_ENTRY, CatalogType::DATABASE_ENTRY, CatalogType::FOREIGN_SERVER_ENTRY}) {
 		catalog.GetCatalogSet(type).Scan([&](CatalogEntry &entry) {
 			if (entry.internal) {
 				return;
@@ -529,6 +530,11 @@ void CheckpointWriter::WriteEntry(CatalogEntry &entry, Serializer &serializer) {
 		WriteTokenizer(tokenizer, serializer);
 		break;
 	}
+	case CatalogType::ROLE_ENTRY: {
+		auto &role = entry.Cast<InCatalogEntry>();
+		WriteRole(role, serializer);
+		break;
+	}
 	case CatalogType::DATABASE_ENTRY: {
 		auto &database = entry.Cast<InCatalogEntry>();
 		WriteDatabase(database, serializer);
@@ -609,6 +615,10 @@ void CheckpointReader::ReadEntry(CatalogTransaction transaction, Deserializer &d
 		ReadTokenizer(transaction, deserializer);
 		break;
 	}
+	case CatalogType::ROLE_ENTRY: {
+		ReadRole(transaction, deserializer);
+		break;
+	}
 	case CatalogType::DATABASE_ENTRY: {
 		ReadDatabase(transaction, deserializer);
 		break;
@@ -687,6 +697,16 @@ void CheckpointReader::ReadTokenizer(CatalogTransaction transaction, Deserialize
 	info->on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
 	auto &schema = catalog.GetEntrySchema(transaction, info->GetQualifiedName());
 	schema.Cast<DuckSchemaEntry>().CreateTokenizer(transaction, info->Cast<CreateTokenizerInfo>());
+}
+
+void CheckpointWriter::WriteRole(InCatalogEntry &role, Serializer &serializer) {
+	serializer.WriteProperty(100, "role", &role);
+}
+
+void CheckpointReader::ReadRole(CatalogTransaction transaction, Deserializer &deserializer) {
+	auto info = deserializer.ReadProperty<unique_ptr<CreateInfo>>(100, "role");
+	info->on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
+	catalog.Cast<DuckCatalog>().CreateRole(transaction, info->Cast<CreateRoleInfo>());
 }
 
 void CheckpointWriter::WriteDatabase(InCatalogEntry &database, Serializer &serializer) {
