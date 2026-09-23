@@ -29,6 +29,7 @@ public:
 	Identifier catalog;
 	//! Whether this dependency is automatically satisfied and must never block a DROP/ALTER of the entry it depends on
 	DependencyDependentFlags flags = DependencyDependentFlags().SetBlocking();
+	bool owned_by = false;
 	subdependency_set_t subdependencies;
 
 public:
