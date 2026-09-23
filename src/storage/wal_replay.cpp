@@ -929,18 +929,23 @@ void WriteAheadLogDeserializer::ReplayCreateTable() {
 void WriteAheadLogDeserializer::ReplayDropTable() {
 	auto entry = WALDropTable::Deserialize(deserializer);
 	DropInfo info;
-
 	info.type = CatalogType::TABLE_ENTRY;
+	info.cascade = true;
+	info.if_not_found = OnEntryNotFound::RETURN_NULL;
 	info.SetQualifiedName(ReplayEntryName(catalog, entry.qualified_name));
 	if (DeserializeOnly()) {
 		return;
 	}
 
 	// Remove any replay indexes of this table.
-	auto &table_entry = catalog.GetEntry<TableCatalogEntry>(context, info.GetQualifiedName());
+	auto table_entry =
+	    Catalog::GetEntry<TableCatalogEntry>(context, info.GetQualifiedName(), OnEntryNotFound::RETURN_NULL);
+	if (!table_entry) {
+		return;
+	}
 	state.replay_index_infos.erase(std::remove_if(state.replay_index_infos.begin(), state.replay_index_infos.end(),
 	                                              [&table_entry](const ReplayState::ReplayIndexInfo &replay_info) {
-		                                              return replay_info.table_oid == table_entry.oid;
+		                                              return replay_info.table_oid == table_entry->oid;
 	                                              }),
 	                               state.replay_index_infos.end());
 
@@ -1082,6 +1087,8 @@ void WriteAheadLogDeserializer::ReplayDropView() {
 	auto entry = WALDropView::Deserialize(deserializer);
 	DropInfo info;
 	info.type = CatalogType::VIEW_ENTRY;
+	info.cascade = true;
+	info.if_not_found = OnEntryNotFound::RETURN_NULL;
 	info.SetQualifiedName(ReplayEntryName(catalog, entry.qualified_name));
 	if (DeserializeOnly()) {
 		return;
@@ -1112,6 +1119,8 @@ void WriteAheadLogDeserializer::ReplayDropSchema() {
 	auto entry = WALDropSchema::Deserialize(deserializer);
 	DropInfo info;
 	info.type = CatalogType::SCHEMA_ENTRY;
+	info.cascade = true;
+	info.if_not_found = OnEntryNotFound::RETURN_NULL;
 	auto schema_name =
 	    entry.qualified_name.Path().empty() ? QualifiedName(std::move(entry.schema)) : std::move(entry.qualified_name);
 	auto path = schema_name.Path();
@@ -1140,8 +1149,9 @@ void WriteAheadLogDeserializer::ReplayCreateType() {
 void WriteAheadLogDeserializer::ReplayDropType() {
 	auto entry = WALDropType::Deserialize(deserializer);
 	DropInfo info;
-
 	info.type = CatalogType::TYPE_ENTRY;
+	info.cascade = true;
+	info.if_not_found = OnEntryNotFound::RETURN_NULL;
 	info.SetQualifiedName(ReplayEntryName(catalog, entry.qualified_name));
 	if (DeserializeOnly()) {
 		return;
@@ -1275,6 +1285,8 @@ void WriteAheadLogDeserializer::ReplayDropSequence() {
 	auto entry = WALDropSequence::Deserialize(deserializer);
 	DropInfo info;
 	info.type = CatalogType::SEQUENCE_ENTRY;
+	info.cascade = true;
+	info.if_not_found = OnEntryNotFound::RETURN_NULL;
 	info.SetQualifiedName(ReplayEntryName(catalog, entry.qualified_name));
 	if (DeserializeOnly()) {
 		return;
@@ -1312,6 +1324,8 @@ void WriteAheadLogDeserializer::ReplayDropMacro() {
 	auto entry = WALDropMacro::Deserialize(deserializer);
 	DropInfo info;
 	info.type = CatalogType::MACRO_ENTRY;
+	info.cascade = true;
+	info.if_not_found = OnEntryNotFound::RETURN_NULL;
 	info.SetQualifiedName(ReplayEntryName(catalog, entry.qualified_name));
 	if (DeserializeOnly()) {
 		return;
@@ -1336,6 +1350,8 @@ void WriteAheadLogDeserializer::ReplayDropTableMacro() {
 	auto entry = WALDropTableMacro::Deserialize(deserializer);
 	DropInfo info;
 	info.type = CatalogType::TABLE_MACRO_ENTRY;
+	info.cascade = true;
+	info.if_not_found = OnEntryNotFound::RETURN_NULL;
 	info.SetQualifiedName(ReplayEntryName(catalog, entry.qualified_name));
 	if (DeserializeOnly()) {
 		return;
@@ -1389,16 +1405,22 @@ void WriteAheadLogDeserializer::ReplayDropIndex() {
 	auto entry = WALDropIndex::Deserialize(deserializer);
 	DropInfo info;
 	info.type = CatalogType::INDEX_ENTRY;
+	info.cascade = true;
+	info.if_not_found = OnEntryNotFound::RETURN_NULL;
 	info.SetQualifiedName(ReplayEntryName(catalog, entry.qualified_name));
 	if (DeserializeOnly()) {
 		return;
 	}
 
 	// Remove the replay index, if any. Match on the index entry's oid.
-	auto &index_entry = catalog.GetEntry<IndexCatalogEntry>(context, info.GetQualifiedName());
+	auto index_entry =
+	    Catalog::GetEntry<IndexCatalogEntry>(context, info.GetQualifiedName(), OnEntryNotFound::RETURN_NULL);
+	if (!index_entry) {
+		return;
+	}
 	state.replay_index_infos.erase(std::remove_if(state.replay_index_infos.begin(), state.replay_index_infos.end(),
 	                                              [&index_entry](const ReplayState::ReplayIndexInfo &replay_info) {
-		                                              return replay_info.index_oid == index_entry.oid;
+		                                              return replay_info.index_oid == index_entry->oid;
 	                                              }),
 	                               state.replay_index_infos.end());
 
