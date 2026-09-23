@@ -73,6 +73,7 @@ public:
 	virtual unique_ptr<CatalogEntry> AlterEntry(CatalogTransaction transaction, AlterInfo &info);
 	virtual void UndoAlter(ClientContext &context, AlterInfo &info);
 	virtual void Rollback(CatalogEntry &prev_entry);
+	static bool CreatedObject(const CatalogEntry &prev_entry);
 	virtual void OnDrop();
 
 	virtual unique_ptr<CatalogEntry> Copy(ClientContext &context) const;
@@ -80,8 +81,7 @@ public:
 	virtual unique_ptr<CreateInfo> GetInfo() const;
 
 	//! Sets the CatalogEntry as the new root entry (i.e. the newest entry)
-	// this is called on a rollback to an AlterEntry
-	virtual void SetAsRoot();
+	virtual void SetAsRoot(optional_ptr<CatalogTransaction> transaction);
 
 	//! Convert the catalog entry to a SQL string that can be used to re-construct the catalog entry
 	virtual string ToSQL() const;

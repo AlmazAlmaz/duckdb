@@ -26,6 +26,7 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
+#include "duckdb/parser/parsed_data/alter_scalar_function_info.hpp"
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_collation_info.hpp"
@@ -36,6 +37,7 @@
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/parser/parsed_data/create_sequence_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "duckdb/parser/parsed_data/create_tokenizer_info.hpp"
 #include "duckdb/parser/parsed_data/create_type_info.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
@@ -84,7 +86,15 @@ DuckSchemaSets::DuckSchemaSets(Catalog &catalog, DuckSchemaEntry &schema)
       sequences(catalog), collations(catalog),
       types(catalog, schema.internal ? make_uniq<DefaultTypeGenerator>(catalog, schema) : nullptr),
       coordinate_systems(
-          catalog, catalog.IsSystemCatalog() ? make_uniq<DefaultCoordinateSystemGenerator>(catalog, schema) : nullptr) {
+          catalog, catalog.IsSystemCatalog() ? make_uniq<DefaultCoordinateSystemGenerator>(catalog, schema) : nullptr),
+      tokenizers(catalog) {
+	const bool one_relation_namespace = catalog.Compatibility() == SqlCompatibility::POSTGRES;
+	if (one_relation_namespace) {
+		tables.ShareNamespace(indexes);
+		tables.ShareNamespace(sequences);
+		tables.ShareNamespace(types);
+		indexes.ShareNamespace(sequences);
+	}
 }
 
 DuckSchemaEntry::DuckSchemaEntry(Catalog &catalog, CreateSchemaInfo &info,
@@ -100,6 +110,65 @@ unique_ptr<CatalogEntry> DuckSchemaEntry::Copy(ClientContext &context) const {
 	auto info_copy = GetInfo();
 	auto &cast_info = info_copy->Cast<CreateSchemaInfo>();
 	return make_uniq<DuckSchemaEntry>(catalog, cast_info, nullptr, schema_info, sets);
+}
+
+void DuckSchemaEntry::SetAsRoot(optional_ptr<CatalogTransaction> transaction) {
+	SetSchemaName(name, transaction);
+}
+
+void DuckSchemaEntry::SetSchemaName(const Identifier &schema_name, optional_ptr<CatalogTransaction> transaction) {
+	auto previous = schema_info->Name();
+	IdentifierEquality equals(catalog.IsCaseSensitive());
+	if (equals(previous, schema_name)) {
+		return;
+	}
+	schema_info->SetName(schema_name);
+	auto parent_path = GetParentSchemaPath();
+	const auto depth = parent_path.size();
+	auto under_parent = [&](const vector<Identifier> &path) {
+		if (path.size() < depth) {
+			return false;
+		}
+		for (idx_t i = 0; i < depth; i++) {
+			if (!equals(path[i], parent_path[i])) {
+				return false;
+			}
+		}
+		return true;
+	};
+	vector<reference<DuckSchemaSets>> pending {*sets};
+	while (!pending.empty()) {
+		auto &schema_sets = pending.back().get();
+		pending.pop_back();
+		auto rename_child = [&](CatalogEntry &entry) {
+			if (entry.type == CatalogType::SCHEMA_ENTRY) {
+				pending.push_back(*entry.Cast<DuckSchemaEntry>().sets);
+				return;
+			}
+			auto &dependencies = entry.Cast<StandardEntry>().dependencies;
+			LogicalDependencyList renamed;
+			for (auto &dependency : dependencies.Set()) {
+				auto copy = dependency;
+				auto &info = copy.entry;
+				if (info.type == CatalogType::SCHEMA_ENTRY && info.schema_path.size() == depth &&
+				    under_parent(info.schema_path) && equals(info.name, previous)) {
+					info.name = schema_name;
+				} else if (info.schema_path.size() > depth && under_parent(info.schema_path) &&
+				           equals(info.schema_path[depth], previous)) {
+					info.schema_path[depth] = schema_name;
+				}
+				renamed.AddDependency(copy);
+			}
+			dependencies = std::move(renamed);
+		};
+		schema_sets.ForEachSet([&](CatalogSet &set) {
+			if (transaction) {
+				set.Scan(*transaction, rename_child);
+			} else {
+				set.Scan(rename_child);
+			}
+		});
+	}
 }
 
 optional_ptr<CatalogEntry> DuckSchemaEntry::CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) {
@@ -137,7 +206,7 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::AddEntryInternal(CatalogTransaction 
 	auto &set = GetCatalogSet(entry_type);
 	dependencies.AddDependency(*this);
 	if (on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
-		auto old_entry = set.GetEntry(transaction, entry_name);
+		auto old_entry = set.GetNamespaceEntry(transaction, entry_name);
 		if (old_entry) {
 			return nullptr;
 		}
@@ -145,7 +214,7 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::AddEntryInternal(CatalogTransaction 
 
 	if (on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
 		// CREATE OR REPLACE: first try to drop the entry
-		auto old_entry = set.GetEntry(transaction, entry_name);
+		auto old_entry = set.GetNamespaceEntry(transaction, entry_name);
 		if (old_entry) {
 			if (dependencies.Contains(*old_entry)) {
 				throw CatalogException("CREATE OR REPLACE is not allowed to depend on itself");
@@ -161,7 +230,7 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::AddEntryInternal(CatalogTransaction 
 	if (!set.CreateEntry(transaction, entry_name, std::move(entry), dependencies)) {
 		// entry already exists!
 		if (on_conflict == OnCreateConflict::ERROR_ON_CONFLICT) {
-			auto existing_entry = set.GetEntry(transaction, entry_name);
+			auto existing_entry = set.GetNamespaceEntry(transaction, entry_name);
 			auto existing_type = existing_entry ? existing_entry->type : entry_type;
 			throw CatalogException::EntryAlreadyExists(existing_type, entry_name);
 		} else {
@@ -281,6 +350,11 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::CreateType(CatalogTransaction transa
 	return AddEntry(transaction, std::move(type_entry), info.on_conflict);
 }
 
+optional_ptr<CatalogEntry> DuckSchemaEntry::CreateTokenizer(CatalogTransaction transaction, CreateTokenizerInfo &info) {
+	auto tokenizer = catalog.Cast<DuckCatalog>().MakeTokenizerEntry(*this, info);
+	return AddEntry(transaction, std::move(tokenizer), info.on_conflict);
+}
+
 optional_ptr<CatalogEntry> DuckSchemaEntry::CreateView(CatalogTransaction transaction, CreateViewInfo &info) {
 	auto view = make_uniq<ViewCatalogEntry>(catalog, *this, info);
 	return AddEntry(transaction, std::move(view), info.on_conflict);
@@ -339,6 +413,26 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::CreatePragmaFunction(CatalogTransact
 
 void DuckSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
 	CatalogType type = info.GetCatalogType();
+
+	if (info.type == AlterType::ALTER_SCALAR_FUNCTION &&
+	    info.Cast<AlterScalarFunctionInfo>().alter_scalar_function_type ==
+	        AlterScalarFunctionType::RENAME_SCALAR_FUNCTION) {
+		auto &name = info.GetQualifiedName().Name();
+		for (auto kind : {CatalogType::SCALAR_FUNCTION_ENTRY, CatalogType::TABLE_MACRO_ENTRY}) {
+			auto &kind_set = GetCatalogSet(kind);
+			if (kind_set.GetEntry(transaction, name)) {
+				if (!kind_set.AlterEntry(transaction, name, info) &&
+				    info.if_not_found == OnEntryNotFound::THROW_EXCEPTION) {
+					throw CatalogException::MissingEntry(CatalogType::MACRO_ENTRY, name, string());
+				}
+				return;
+			}
+		}
+		if (info.if_not_found == OnEntryNotFound::THROW_EXCEPTION) {
+			throw CatalogException::MissingEntry(CatalogType::MACRO_ENTRY, name, string());
+		}
+		return;
+	}
 
 	auto &set = GetCatalogSet(type);
 	if (info.type == AlterType::CHANGE_OWNERSHIP) {
@@ -481,6 +575,8 @@ CatalogSet &DuckSchemaSets::GetCatalogSet(CatalogType type) {
 		return coordinate_systems;
 	case CatalogType::TYPE_ENTRY:
 		return types;
+	case CatalogType::TOKENIZER_ENTRY:
+		return tokenizers;
 	default:
 		throw InternalException({{"catalog_type", CatalogTypeToString(type)}}, "Unsupported catalog type in schema");
 	}
@@ -502,6 +598,7 @@ void DuckSchemaSets::Verify(Catalog &catalog) {
 	sequences.Verify(catalog);
 	collations.Verify(catalog);
 	types.Verify(catalog);
+	tokenizers.Verify(catalog);
 }
 
 } // namespace duckdb

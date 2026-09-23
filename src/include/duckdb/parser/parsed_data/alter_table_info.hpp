@@ -171,6 +171,9 @@ struct RenameTableInfo : public AlterTableInfo {
 public:
 	unique_ptr<AlterInfo> Copy() const override;
 	string ToString() const override;
+	optional_ptr<const Identifier> GetNewName() const override {
+		return &new_table_name;
+	}
 
 	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<AlterTableInfo> Deserialize(Deserializer &deserializer);
@@ -444,11 +447,83 @@ struct RenameViewInfo : public AlterViewInfo {
 public:
 	unique_ptr<AlterInfo> Copy() const override;
 	string ToString() const override;
+	optional_ptr<const Identifier> GetNewName() const override {
+		return &new_view_name;
+	}
 	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<AlterViewInfo> Deserialize(Deserializer &deserializer);
 
 private:
 	RenameViewInfo();
+};
+
+//===--------------------------------------------------------------------===//
+// AlterIndexInfo
+//===--------------------------------------------------------------------===//
+enum class AlterIndexType : uint8_t { INVALID = 0, SET_INDEX_OPTIONS = 1, RESET_INDEX_OPTIONS = 2, RENAME_INDEX = 3 };
+
+struct AlterIndexInfo : public AlterInfo {
+	AlterIndexInfo(AlterIndexType type, const AlterEntryData &data);
+	~AlterIndexInfo() override;
+
+	AlterIndexType alter_index_type;
+
+public:
+	CatalogType GetCatalogType() const override;
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<AlterInfo> Deserialize(Deserializer &deserializer);
+
+protected:
+	explicit AlterIndexInfo(AlterIndexType type);
+};
+
+//===--------------------------------------------------------------------===//
+// SetIndexOptionsInfo
+//===--------------------------------------------------------------------===//
+struct SetIndexOptionsInfo : public AlterIndexInfo {
+	SetIndexOptionsInfo(const AlterEntryData &data, case_insensitive_map_t<Value> options);
+	~SetIndexOptionsInfo() override;
+
+	case_insensitive_map_t<Value> options;
+
+public:
+	unique_ptr<AlterInfo> Copy() const override;
+	string ToString() const override;
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<AlterIndexInfo> Deserialize(Deserializer &deserializer);
+
+private:
+	SetIndexOptionsInfo();
+};
+
+//===--------------------------------------------------------------------===//
+// ResetIndexOptionsInfo
+//===--------------------------------------------------------------------===//
+struct ResetIndexOptionsInfo : public AlterIndexInfo {
+	ResetIndexOptionsInfo(const AlterEntryData &data, identifier_set_t options);
+	~ResetIndexOptionsInfo() override;
+
+	identifier_set_t options;
+
+public:
+	unique_ptr<AlterInfo> Copy() const override;
+	string ToString() const override;
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<AlterIndexInfo> Deserialize(Deserializer &deserializer);
+
+private:
+	ResetIndexOptionsInfo();
+};
+
+struct RenameIndexInfo : public RenameEntryInfo<RenameIndexInfo, AlterIndexInfo, AlterIndexType::RENAME_INDEX> {
+	using RenameEntryInfo::RenameEntryInfo;
+
+public:
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<AlterIndexInfo> Deserialize(Deserializer &deserializer);
+
+private:
+	RenameIndexInfo() = default;
 };
 
 //===--------------------------------------------------------------------===//

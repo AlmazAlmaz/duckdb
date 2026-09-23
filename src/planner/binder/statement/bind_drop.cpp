@@ -57,7 +57,8 @@ BoundStatement Binder::Bind(DropStatement &stmt) {
 	case CatalogType::TABLE_MACRO_ENTRY:
 	case CatalogType::INDEX_ENTRY:
 	case CatalogType::TABLE_ENTRY:
-	case CatalogType::TYPE_ENTRY: {
+	case CatalogType::TYPE_ENTRY:
+	case CatalogType::TOKENIZER_ENTRY: {
 		// Resolve the catalog + (possibly nested) schema path. A leading component is the catalog when it names an
 		// attached database, and otherwise the outermost schema of a nested schema path. The entry lookup below
 		// navigates whatever qualification comes out of this.
@@ -89,7 +90,12 @@ BoundStatement Binder::Bind(DropStatement &stmt) {
 			}
 		} else {
 			EntryLookupInfo entry_lookup(stmt.info->type, stmt.info->GetQualifiedName());
-			entry = Catalog::GetEntry(context, entry_lookup, stmt.info->if_not_found);
+			auto if_not_found = stmt.info->if_not_found;
+			if (catalog && catalog->Compatibility() == SqlCompatibility::POSTGRES &&
+			    Catalog::InRelationNamespace(stmt.info->type)) {
+				if_not_found = OnEntryNotFound::RETURN_NULL;
+			}
+			entry = Catalog::GetEntry(context, entry_lookup, if_not_found);
 		}
 		if (!entry) {
 			break;
