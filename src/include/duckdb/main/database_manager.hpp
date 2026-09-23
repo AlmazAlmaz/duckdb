@@ -37,6 +37,13 @@ public:
 	explicit DatabaseManager(DatabaseInstance &db);
 	~DatabaseManager();
 
+	//! Oids come in fixed ranges, so a user object's oid does not depend on how many builtins the system catalog
+	//! registers, and a catalog replayed by oid survives a builtin added or removed: [0, 2^17) belongs to the host
+	//! (PostgreSQL numbers its own objects below 16384), the system catalog takes [2^17, 2^18), and user objects
+	//! start at 2^18.
+	static constexpr idx_t FIRST_SYSTEM_OID = 131072;
+	static constexpr idx_t FIRST_OID = 262144;
+
 public:
 	static DatabaseManager &Get(DatabaseInstance &db);
 	static DatabaseManager &Get(ClientContext &db);
@@ -122,8 +129,17 @@ public:
 	transaction_t ActiveTransactionNumber() const {
 		return current_transaction_id;
 	}
-	idx_t NextOid() {
-		return next_oid++;
+	idx_t NextOid(idx_t count = 1) {
+		return next_oid.fetch_add(count, std::memory_order_relaxed);
+	}
+	idx_t NextSystemOid(idx_t count = 1);
+	idx_t ClaimOid(idx_t oid) {
+		for (auto current = next_oid.load(); current <= oid;) {
+			if (next_oid.compare_exchange_weak(current, oid + 1)) {
+				break;
+			}
+		}
+		return oid;
 	}
 	bool HasAttachedDatabase() {
 		lock_guard<mutex> guard(databases_lock);
@@ -153,6 +169,7 @@ private:
 	Identifier default_database;
 	//! The next object id handed out by the NextOid method
 	atomic<idx_t> next_oid;
+	atomic<idx_t> next_system_oid;
 	//! The current query number
 	atomic<transaction_t> current_query_number;
 	//! The current transaction number

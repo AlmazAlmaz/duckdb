@@ -299,7 +299,7 @@ void WriteAheadLog::WriteCheckpoint(MetaBlockPointer meta_block) {
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteCreateTable(const TableCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::CREATE_TABLE);
-	serializer.WriteEntry(WALCreateTable {entry.GetInfo()});
+	serializer.WriteEntry(WALCreateTable {entry.GetSerializedInfo()});
 	serializer.End();
 }
 
@@ -321,7 +321,8 @@ void WriteAheadLog::WriteCreateSchema(const SchemaCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::CREATE_SCHEMA);
 	// serialize the schema as a QualifiedName: parent schemas form the path, the schema name is the name. For storage
 	// versions older than v2.0.0 (which only support top-level schemas) the legacy "schema" name field is written.
-	serializer.WriteEntry(WALCreateSchema {entry.name, QualifiedName::FromPath(entry.GetSchemaPath())});
+	serializer.WriteEntry(
+	    WALCreateSchema {entry.name, QualifiedName::FromPath(entry.GetSchemaPath()), entry.GetSerializedInfo()});
 	serializer.End();
 }
 
@@ -330,7 +331,7 @@ void WriteAheadLog::WriteCreateSchema(const SchemaCatalogEntry &entry) {
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteCreateSequence(const SequenceCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::CREATE_SEQUENCE);
-	serializer.WriteEntry(WALCreateSequence {entry.GetInfo()});
+	serializer.WriteEntry(WALCreateSequence {entry.GetSerializedInfo()});
 	serializer.End();
 }
 
@@ -354,7 +355,7 @@ void WriteAheadLog::WriteSequenceValue(SequenceValue val) {
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteCreateMacro(const ScalarMacroCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::CREATE_MACRO);
-	serializer.WriteEntry(WALCreateMacro {entry.GetInfo()});
+	serializer.WriteEntry(WALCreateMacro {entry.GetSerializedInfo()});
 	serializer.End();
 }
 
@@ -366,7 +367,7 @@ void WriteAheadLog::WriteDropMacro(const ScalarMacroCatalogEntry &entry) {
 
 void WriteAheadLog::WriteCreateTableMacro(const TableMacroCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::CREATE_TABLE_MACRO);
-	serializer.WriteEntry(WALCreateTableMacro {entry.GetInfo()});
+	serializer.WriteEntry(WALCreateTableMacro {entry.GetSerializedInfo()});
 	serializer.End();
 }
 
@@ -439,7 +440,7 @@ void WriteAheadLog::WriteDropIndex(const IndexCatalogEntry &entry) {
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteCreateType(const TypeCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::CREATE_TYPE);
-	serializer.WriteEntry(WALCreateType {entry.GetInfo()});
+	serializer.WriteEntry(WALCreateType {entry.GetSerializedInfo()});
 	serializer.End();
 }
 
@@ -454,7 +455,7 @@ void WriteAheadLog::WriteDropType(const TypeCatalogEntry &entry) {
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteCreateTrigger(const TriggerCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::CREATE_TRIGGER);
-	serializer.WriteEntry(WALCreateTrigger {entry.GetInfo()});
+	serializer.WriteEntry(WALCreateTrigger {entry.GetSerializedInfo()});
 	serializer.End();
 }
 
@@ -506,7 +507,7 @@ void WriteAheadLog::WriteDropForeignServer(const InCatalogEntry &entry) {
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteCreateView(const ViewCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::CREATE_VIEW);
-	serializer.WriteEntry(WALCreateView {entry.GetInfo()});
+	serializer.WriteEntry(WALCreateView {entry.GetSerializedInfo()});
 	serializer.End();
 }
 

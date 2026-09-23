@@ -14,8 +14,16 @@ CatalogEntry::CatalogEntry(CatalogType type, Identifier name_p, idx_t oid)
       parent(nullptr) {
 }
 
-CatalogEntry::CatalogEntry(CatalogType type, Catalog &catalog, Identifier name_p)
-    : CatalogEntry(type, std::move(name_p), catalog.GetDatabase().GetDatabaseManager().NextOid()) {
+static idx_t AssignOid(Catalog &catalog, idx_t oid) {
+	auto &manager = catalog.GetDatabase().GetDatabaseManager();
+	if (oid) {
+		return manager.ClaimOid(oid);
+	}
+	return catalog.IsSystemCatalog() ? manager.NextSystemOid() : manager.NextOid();
+}
+
+CatalogEntry::CatalogEntry(CatalogType type, Catalog &catalog, Identifier name_p, idx_t oid)
+    : CatalogEntry(type, std::move(name_p), AssignOid(catalog, oid)) {
 }
 
 CatalogEntry::~CatalogEntry() {
@@ -120,9 +128,14 @@ SchemaCatalogEntry &CatalogEntry::ParentSchema(ClientContext &context) const {
 	return ParentSchema(catalog.GetCatalogTransaction(context));
 }
 
+unique_ptr<CreateInfo> CatalogEntry::GetSerializedInfo() const {
+	auto info = GetInfo();
+	info->oid = oid;
+	return info;
+}
+
 void CatalogEntry::Serialize(Serializer &serializer) const {
-	const auto info = GetInfo();
-	info->Serialize(serializer);
+	GetSerializedInfo()->Serialize(serializer);
 }
 
 unique_ptr<CreateInfo> CatalogEntry::Deserialize(Deserializer &deserializer) {
@@ -142,8 +155,8 @@ bool CatalogEntry::CreatedObject(const CatalogEntry &prev_entry) {
 void CatalogEntry::OnDrop() {
 }
 
-InCatalogEntry::InCatalogEntry(CatalogType type, Catalog &catalog, Identifier name)
-    : CatalogEntry(type, catalog, std::move(name)), catalog(catalog) {
+InCatalogEntry::InCatalogEntry(CatalogType type, Catalog &catalog, Identifier name, idx_t oid)
+    : CatalogEntry(type, catalog, std::move(name), oid), catalog(catalog) {
 }
 
 InCatalogEntry::~InCatalogEntry() {

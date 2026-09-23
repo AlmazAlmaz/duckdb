@@ -35,7 +35,7 @@ struct CreateInfo;
 //! Abstract base class of an entry in the catalog
 class CatalogEntry {
 public:
-	CatalogEntry(CatalogType type, Catalog &catalog, Identifier name);
+	CatalogEntry(CatalogType type, Catalog &catalog, Identifier name, idx_t oid = 0);
 	CatalogEntry(CatalogType type, Identifier name, idx_t oid);
 	virtual ~CatalogEntry();
 
@@ -79,6 +79,7 @@ public:
 	virtual unique_ptr<CatalogEntry> Copy(ClientContext &context) const;
 
 	virtual unique_ptr<CreateInfo> GetInfo() const;
+	unique_ptr<CreateInfo> GetSerializedInfo() const;
 
 	//! Sets the CatalogEntry as the new root entry (i.e. the newest entry)
 	virtual void SetAsRoot(optional_ptr<CatalogTransaction> transaction);
@@ -122,7 +123,7 @@ public:
 
 class InCatalogEntry : public CatalogEntry {
 public:
-	InCatalogEntry(CatalogType type, Catalog &catalog, Identifier name);
+	InCatalogEntry(CatalogType type, Catalog &catalog, Identifier name, idx_t oid = 0);
 	~InCatalogEntry() override;
 
 	//! The catalog the entry belongs to

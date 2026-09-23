@@ -21,10 +21,9 @@
 
 namespace duckdb {
 
-// Oids are started at 20000 to avoid colliding with Postgres builtin types, which end at 16383:
-// https://github.com/postgres/postgres/blob/db93988ab0e78396f2ed9e96c826ff988d12b9f2/src/include/access/transam.h#L156-L197
 DatabaseManager::DatabaseManager(DatabaseInstance &db)
-    : db(db), next_oid(20000), current_query_number(1), current_transaction_id(0), remote_catalog_count(0) {
+    : db(db), next_oid(FIRST_OID), next_system_oid(FIRST_SYSTEM_OID), current_query_number(1),
+      current_transaction_id(0), remote_catalog_count(0) {
 	system = make_shared_ptr<AttachedDatabase>(db);
 	auto &config = DBConfig::GetConfig(db);
 	path_manager = config.path_manager;
@@ -39,6 +38,12 @@ DatabaseManager::~DatabaseManager() {
 
 DatabaseManager &DatabaseManager::Get(AttachedDatabase &db) {
 	return DatabaseManager::Get(db.GetDatabase());
+}
+
+idx_t DatabaseManager::NextSystemOid(idx_t count) {
+	auto oid = next_system_oid.fetch_add(count, std::memory_order_relaxed);
+	D_ASSERT(oid + count <= FIRST_OID);
+	return oid;
 }
 
 void DatabaseManager::InitializeSystemCatalog() {

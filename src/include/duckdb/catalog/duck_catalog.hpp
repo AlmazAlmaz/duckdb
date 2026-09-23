@@ -111,6 +111,16 @@ public:
 
 	optional_ptr<DependencyManager> GetDependencyManager() override;
 
+	optional_ptr<SchemaCatalogEntry> FindSchemaById(ClientContext &context, idx_t id);
+
+	optional_ptr<CatalogEntry> FindEntryById(optional_ptr<ClientContext> context, CatalogType type, idx_t id);
+
+	template <class T>
+	optional_ptr<T> FindIn(optional_ptr<ClientContext> context, idx_t id) {
+		auto entry = FindEntryById(context, T::Type, id);
+		return entry ? &entry->template Cast<T>() : nullptr;
+	}
+
 private:
 	DUCKDB_API void DropSchema(CatalogTransaction transaction, DropInfo &info);
 	DUCKDB_API void DropSchema(ClientContext &context, DropInfo &info) override;
