@@ -4,6 +4,7 @@
 #include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/function/scalar/regexp.hpp"
+#include "duckdb/function/scalar/regexp_replace_constant.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/vector_operations/binary_executor.hpp"
@@ -106,6 +107,8 @@ unique_ptr<FunctionData> RegexpMatchesBind(BindScalarFunctionInput &input) {
 	D_ASSERT(arguments.size() == 2 || arguments.size() == 3);
 	RE2::Options options;
 	options.set_log_errors(false);
+	options.set_thread_safe(false);
+	options.set_valid_utf8(true);
 	if (arguments.size() == 3) {
 		ParseRegexOptions(input.GetConstant(2), options);
 	}
@@ -183,6 +186,8 @@ static unique_ptr<FunctionData> RegexReplaceBind(BindScalarFunctionInput &input)
 		ParseRegexOptions(input.GetConstant(3), data->options, &data->global_replace);
 	}
 	data->options.set_log_errors(false);
+	data->options.set_thread_safe(false);
+	data->options.set_valid_utf8(true);
 	return std::move(data);
 }
 
@@ -194,6 +199,12 @@ static void RegexReplaceFunction(DataChunk &args, ExpressionState &state, Vector
 	const auto &patterns = args.data[1];
 	const auto &replaces = args.data[2];
 
+	if (info.constant_pattern && !info.global_replace && replaces.GetVectorType() == VectorType::CONSTANT_VECTOR &&
+	    !ConstantVector::IsNull(replaces)) {
+		auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<RegexLocalState>();
+		RegexpReplaceConstant::Execute(strings, ConstantVector::GetData<string_t>(replaces)[0], lstate, result);
+		return;
+	}
 	auto &heap = StringVector::GetStringHeap(result);
 	if (info.constant_pattern) {
 		auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<RegexLocalState>();
@@ -375,6 +386,8 @@ static unique_ptr<FunctionData> RegexExtractBind(BindScalarFunctionInput &input)
 	D_ASSERT(arguments.size() >= 2);
 
 	duckdb_re2::RE2::Options options;
+	options.set_thread_safe(false);
+	options.set_valid_utf8(true);
 
 	string constant_string;
 	bool constant_pattern = TryParseConstantPattern(input.TryGetConstant(1), constant_string);

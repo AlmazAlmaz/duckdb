@@ -294,6 +294,8 @@ unique_ptr<FunctionData> RegexpExtractAllStruct::Bind(BindScalarFunctionInput &i
 		throw BinderException("regexp_extract_all struct variant requires at least 3 arguments");
 	}
 	duckdb_re2::RE2::Options options;
+	options.set_thread_safe(false);
+	options.set_valid_utf8(true);
 	string constant_string;
 	bool constant_pattern = TryParseConstantPattern(input.TryGetConstant(1), constant_string);
 	if (!constant_pattern) {
@@ -318,6 +320,8 @@ unique_ptr<FunctionData> RegexpExtractAll::Bind(BindScalarFunctionInput &input) 
 	D_ASSERT(arguments.size() >= 2);
 
 	duckdb_re2::RE2::Options options;
+	options.set_thread_safe(false);
+	options.set_valid_utf8(true);
 
 	string constant_string;
 	bool constant_pattern = TryParseConstantPattern(input.TryGetConstant(1), constant_string);
