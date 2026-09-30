@@ -1,11 +1,14 @@
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/likely.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/swar.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
+#include "re2/segment_plan.h"
 
 #include <absl/strings/ascii.h>
 
@@ -175,7 +178,7 @@ struct StandardCharacterReader {
 
 struct ASCIILCaseReader {
 	static void NextCharacter(const char *sdata, idx_t slen, idx_t &sidx) {
-		sidx++;
+		StandardCharacterReader::NextCharacter(sdata, slen, sidx);
 	}
 
 	static char Operation(const char *data, idx_t pos) {
@@ -199,7 +202,7 @@ bool TemplatedLikeOperator(const char *sdata, idx_t slen, const char *pdata, idx
 				if (pidx + 1 == plen) {
 					throw SyntaxException("Like pattern must not end with escape character!");
 				}
-				if (pdata[pidx + 1] == schar) {
+				if (READER::Operation(pdata, pidx + 1) == schar) {
 					pidx += 2;
 					sidx++;
 					continue;
@@ -239,18 +242,49 @@ bool TemplatedLikeOperator(const char *sdata, idx_t slen, const char *pdata, idx
 }
 
 struct LikeSegment {
-	explicit LikeSegment(string pattern) : pattern(std::move(pattern)) {
+	explicit LikeSegment(string pattern_p) : pattern(std::move(pattern_p)), finder(pattern) {
+	}
+
+	template <bool IGNORE_CASE>
+	bool At(const_data_ptr_t str) const {
+		if constexpr (IGNORE_CASE) {
+			return duckdb_re2::LiteralFinder::EqualIgnoreCase(const_char_ptr_cast(str), pattern.c_str(),
+			                                                  pattern.size());
+		}
+		return memcmp(str, pattern.c_str(), pattern.size()) == 0;
+	}
+
+	template <bool IGNORE_CASE>
+	idx_t Find(const_data_ptr_t str, idx_t str_len) const {
+		if constexpr (IGNORE_CASE) {
+			auto begin = const_char_ptr_cast(str);
+			auto found = finder.FindIgnoreCase(pattern, begin, begin + str_len);
+			return found ? UnsafeNumericCast<idx_t>(found - begin) : DConstants::INVALID_INDEX;
+		}
+		return FindStrInStr(str, str_len, const_uchar_ptr_cast(pattern.c_str()), pattern.size(), finder);
 	}
 
 	string pattern;
+	duckdb_re2::LiteralFinder finder;
 };
 
 struct LikeMatcher : public FunctionData {
-	LikeMatcher(string like_pattern_p, vector<LikeSegment> segments, bool has_start_percentage, bool has_end_percentage)
-	    : like_pattern(std::move(like_pattern_p)), segments(std::move(segments)),
-	      has_start_percentage(has_start_percentage), has_end_percentage(has_end_percentage) {
+	LikeMatcher(string like_pattern_p, bool has_escape, char escape, vector<LikeSegment> segments,
+	            bool has_start_percentage, bool has_end_percentage, shared_ptr<const duckdb_re2::SegmentPlan> plan_p)
+	    : like_pattern(std::move(like_pattern_p)), has_escape(has_escape), escape(escape),
+	      segments(std::move(segments)), has_start_percentage(has_start_percentage),
+	      has_end_percentage(has_end_percentage), plan(std::move(plan_p)) {
 	}
 
+	bool HasPlan() const {
+		return plan != nullptr;
+	}
+
+	bool MatchPlan(string_t &str) {
+		return plan->Match(absl::string_view(str.GetData(), str.GetSize()));
+	}
+
+	template <bool IGNORE_CASE = false>
 	bool Match(string_t &str) {
 		auto str_data = const_uchar_ptr_cast(str.GetData());
 		auto str_len = str.GetSize();
@@ -262,7 +296,7 @@ struct LikeMatcher : public FunctionData {
 			if (str_len < segment.pattern.size()) {
 				return false;
 			}
-			if (memcmp(str_data, segment.pattern.c_str(), segment.pattern.size()) != 0) {
+			if (!segment.At<IGNORE_CASE>(str_data)) {
 				return false;
 			}
 			str_data += segment.pattern.size();
@@ -279,8 +313,7 @@ struct LikeMatcher : public FunctionData {
 		for (; segment_idx < end_idx; segment_idx++) {
 			auto &segment = segments[segment_idx];
 			// find the pattern of the current segment
-			idx_t next_offset =
-			    FindStrInStr(str_data, str_len, const_uchar_ptr_cast(segment.pattern.c_str()), segment.pattern.size());
+			idx_t next_offset = segment.Find<IGNORE_CASE>(str_data, str_len);
 			if (next_offset == DConstants::INVALID_INDEX) {
 				// could not find this pattern in the string: no match
 				return false;
@@ -296,72 +329,97 @@ struct LikeMatcher : public FunctionData {
 			if (str_len < segment.pattern.size()) {
 				return false;
 			}
-			if (memcmp(str_data + str_len - segment.pattern.size(), segment.pattern.c_str(), segment.pattern.size()) !=
-			    0) {
+			if (!segment.At<IGNORE_CASE>(str_data + str_len - segment.pattern.size())) {
 				return false;
 			}
 			return true;
 		} else {
 			auto &segment = segments.back();
 			// find the pattern of the current segment
-			idx_t next_offset =
-			    FindStrInStr(str_data, str_len, const_uchar_ptr_cast(segment.pattern.c_str()), segment.pattern.size());
-			return next_offset != DConstants::INVALID_INDEX;
+			return segment.Find<IGNORE_CASE>(str_data, str_len) != DConstants::INVALID_INDEX;
 		}
 	}
 
-	static unique_ptr<LikeMatcher> CreateLikeMatcher(string like_pattern, char escape = '\\') {
-		vector<LikeSegment> segments;
-		idx_t last_non_pattern = 0;
-		bool has_start_percentage = false;
-		bool has_end_percentage = false;
-		for (idx_t i = 0; i < like_pattern.size(); i++) {
-			auto ch = like_pattern[i];
-			if (ch == escape || ch == '%' || ch == '_') {
-				// special character, push a constant pattern
-				if (i > last_non_pattern) {
-					segments.emplace_back(like_pattern.substr(last_non_pattern, i - last_non_pattern));
-				}
-				last_non_pattern = i + 1;
-				if (ch == escape || ch == '_') {
-					// escape or underscore: could not create efficient like matcher
-					// FIXME: we could handle escaped percentages here
-					return nullptr;
-				} else {
-					// sample_size
-					if (i == 0) {
-						has_start_percentage = true;
-					}
-					if (i + 1 == like_pattern.size()) {
-						has_end_percentage = true;
-					}
-				}
-			}
-		}
-		if (last_non_pattern < like_pattern.size()) {
-			segments.emplace_back(like_pattern.substr(last_non_pattern, like_pattern.size() - last_non_pattern));
-		}
-		if (segments.empty()) {
-			return nullptr;
-		}
-		return make_uniq<LikeMatcher>(std::move(like_pattern), std::move(segments), has_start_percentage,
-		                              has_end_percentage);
+	static unique_ptr<LikeMatcher> CreateLikeMatcher(string like_pattern, bool has_escape = true, char escape = '\\') {
+		return Create(std::move(like_pattern), has_escape, escape, true);
+	}
+
+	static unique_ptr<LikeMatcher> CreateLiteralMatcher(string like_pattern, bool has_escape, char escape) {
+		return Create(std::move(like_pattern), has_escape, escape, false);
 	}
 
 	unique_ptr<FunctionData> Copy() const override {
-		return make_uniq<LikeMatcher>(like_pattern, segments, has_start_percentage, has_end_percentage);
+		return make_uniq<LikeMatcher>(like_pattern, has_escape, escape, segments, has_start_percentage,
+		                              has_end_percentage, plan);
 	}
 
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<LikeMatcher>();
-		return like_pattern == other.like_pattern;
+		return like_pattern == other.like_pattern && has_escape == other.has_escape && escape == other.escape;
 	}
 
 private:
+	static unique_ptr<LikeMatcher> Create(string like_pattern, bool has_escape, char escape, bool single_characters) {
+		vector<LikeSegment> segments;
+		string literal;
+		bool has_start_percentage = false;
+		bool has_end_percentage = false;
+		for (idx_t i = 0; i < like_pattern.size(); i++) {
+			auto ch = like_pattern[i];
+			if (has_escape && ch == escape) {
+				if (i + 1 == like_pattern.size()) {
+					return nullptr;
+				}
+				literal += like_pattern[++i];
+				continue;
+			}
+			if (ch == '_') {
+				if (!single_characters) {
+					// underscore: could not create efficient like matcher
+					return nullptr;
+				}
+				shared_ptr<const duckdb_re2::SegmentPlan> plan(
+				    duckdb_re2::SegmentPlan::MakeLike(like_pattern, has_escape, escape, true));
+				if (!plan) {
+					return nullptr;
+				}
+				return make_uniq<LikeMatcher>(std::move(like_pattern), has_escape, escape, vector<LikeSegment>(), false,
+				                              false, std::move(plan));
+			}
+			if (ch != '%') {
+				literal += ch;
+				continue;
+			}
+			// special character, push a constant pattern
+			if (!literal.empty()) {
+				segments.emplace_back(std::move(literal));
+				literal.clear();
+			}
+			// sample_size
+			if (i == 0) {
+				has_start_percentage = true;
+			}
+			if (i + 1 == like_pattern.size()) {
+				has_end_percentage = true;
+			}
+		}
+		if (!literal.empty()) {
+			segments.emplace_back(std::move(literal));
+		}
+		if (segments.empty()) {
+			return nullptr;
+		}
+		return make_uniq<LikeMatcher>(std::move(like_pattern), has_escape, escape, std::move(segments),
+		                              has_start_percentage, has_end_percentage, nullptr);
+	}
+
 	string like_pattern;
+	bool has_escape;
+	char escape;
 	vector<LikeSegment> segments;
 	bool has_start_percentage;
 	bool has_end_percentage;
+	shared_ptr<const duckdb_re2::SegmentPlan> plan;
 };
 
 unique_ptr<FunctionData> LikeBindFunction(BindScalarFunctionInput &input) {
@@ -405,111 +463,280 @@ char GetEscapeChar(string_t escape) {
 	return escape.GetSize() == 0 ? '\0' : *escape.GetData();
 }
 
-struct LikeEscapeOperator {
-	template <class TA, class TB, class TC>
-	static inline bool Operation(TA str, TB pattern, TC escape) {
+bool CaseCanChangeEscapes(const char *data, idx_t size, char escape) {
+	auto letter = static_cast<uint8_t>(StringUtil::CharacterToLower(escape));
+	bool found = false;
+	for (idx_t i = 0; i < size; i++) {
+		auto c = static_cast<uint8_t>(data[i]);
+		found |= (c | 0x20) == letter || c >= 0x80;
+	}
+	return found;
+}
+
+idx_t WithBackslashEscape(const char *data, idx_t size, char escape, char *result) {
+	idx_t length = 0;
+	for (idx_t i = 0; i < size; i++) {
+		if (data[i] == escape) {
+			result[length++] = '\\';
+			if (++i < size) {
+				result[length++] = data[i];
+			}
+		} else if (data[i] == '\\') {
+			result[length++] = '\\';
+			result[length++] = '\\';
+		} else {
+			result[length++] = data[i];
+		}
+	}
+	return length;
+}
+
+bool LikeEscapeOperator(string_t str, string_t pattern, string_t escape) {
+	char escape_char = GetEscapeChar(escape);
+	return escape.GetSize() == 0 ? LikeOperatorFunction(str, pattern) : LikeOperatorFunction(str, pattern, escape_char);
+}
+
+bool UniformPattern(const Vector &patterns, string_t &pattern) {
+	if (patterns.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+		if (ConstantVector::IsNull(patterns)) {
+			return false;
+		}
+		pattern = *ConstantVector::GetData<string_t>(patterns);
+		return true;
+	}
+	auto values = patterns.Values<string_t>();
+	if (values.size() == 0 || !values[0].IsValid()) {
+		return false;
+	}
+	pattern = values[0].GetValue();
+	for (auto entry : values) {
+		if (!entry.IsValid() || entry.GetValue() != pattern) {
+			return false;
+		}
+	}
+	return true;
+}
+
+struct LikeLocalState : public FunctionLocalState {
+	optional_ptr<LikeMatcher> Matcher(string_t pattern, bool has_escape, char escape) {
+		if (!prepared || pattern != last_pattern || has_escape != last_has_escape || escape != last_escape) {
+			last_pattern.assign(pattern.GetData(), pattern.GetSize());
+			last_has_escape = has_escape;
+			last_escape = escape;
+			matcher = LikeMatcher::CreateLikeMatcher(last_pattern, has_escape, escape);
+			prepared = true;
+		}
+		return matcher.get();
+	}
+
+	string last_pattern;
+	bool last_has_escape = false;
+	char last_escape = '\0';
+	bool prepared = false;
+	unique_ptr<LikeMatcher> matcher;
+};
+
+unique_ptr<FunctionLocalState> LikeInitLocalState(ExpressionState &state, const BoundFunctionExpression &expr,
+                                                  FunctionData *bind_data) {
+	return make_uniq<LikeLocalState>();
+}
+
+template <bool INVERT>
+void MatchAll(LikeMatcher &matcher, const Vector &strings, Vector &result) {
+	if (matcher.HasPlan()) {
+		UnaryExecutor::Execute<string_t, bool>(strings, result, [&](string_t str) {
+			bool match = matcher.MatchPlan(str);
+			return INVERT ? !match : match;
+		});
+		return;
+	}
+	UnaryExecutor::Execute<string_t, bool>(strings, result, [&](string_t str) {
+		bool match = matcher.Match(str);
+		return INVERT ? !match : match;
+	});
+}
+
+template <bool INVERT>
+void LikeMatchPatterns(LikeLocalState &lstate, const Vector &strings, const Vector &patterns, bool has_escape,
+                       char escape, Vector &result) {
+	string_t pattern;
+	if (UniformPattern(patterns, pattern)) {
+		auto matcher = lstate.Matcher(pattern, has_escape, escape);
+		if (matcher) {
+			MatchAll<INVERT>(*matcher, strings, result);
+			return;
+		}
+	}
+	// use generic like matcher
+	if (has_escape) {
+		BinaryExecutor::Execute<string_t, string_t, bool>(strings, patterns, result,
+		                                                  [&](string_t str, string_t pattern) {
+			                                                  bool match = LikeOperatorFunction(str, pattern, escape);
+			                                                  return INVERT ? !match : match;
+		                                                  });
+		return;
+	}
+	BinaryExecutor::Execute<string_t, string_t, bool>(strings, patterns, result, [&](string_t str, string_t pattern) {
+		bool match = LikeOperatorFunction(str, pattern);
+		return INVERT ? !match : match;
+	});
+}
+
+struct ILikeBuffer {
+	char *Reserve(idx_t size) {
+		if (size > capacity) {
+			data = make_unsafe_uniq_array_uninitialized<char>(size);
+			capacity = size;
+		}
+		return data.get();
+	}
+
+	string_t Lower(string_t input) {
+		auto capacity = 2 * input.GetSize();
+		auto result = Reserve(capacity);
+		auto lower_size = LowerCase(input.GetData(), input.GetSize(), result, capacity);
+		return string_t(result, UnsafeNumericCast<uint32_t>(lower_size));
+	}
+
+	unsafe_unique_array<char> data;
+	idx_t capacity = 0;
+};
+
+bool HasNonAsciiLoweringToAscii(const char *data, idx_t size) {
+	idx_t i = 0;
+	for (; i + SwarWord::SIZE <= size; i += SwarWord::SIZE) {
+		auto word = Load<uint64_t>(const_data_ptr_cast(data + i));
+		if (SwarWord::ZeroBytes(word ^ SwarWord::Repeat(0xC4)) | SwarWord::ZeroBytes(word ^ SwarWord::Repeat(0xE2))) {
+			break;
+		}
+	}
+	for (; i + 1 < size; i++) {
+		auto byte = static_cast<uint8_t>(data[i]);
+		auto next = static_cast<uint8_t>(data[i + 1]);
+		if ((byte == 0xC4 && next == 0xB0) ||
+		    (byte == 0xE2 && next == 0x84 && i + 2 < size && static_cast<uint8_t>(data[i + 2]) == 0xAA)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+struct ILikePattern {
+	bool MustLower(const string_t &str, idx_t ascii_end) const {
+		return !ascii || HasNonAsciiLoweringToAscii(str.GetData() + ascii_end, str.GetSize() - ascii_end);
+	}
+
+	template <class READER = StandardCharacterReader>
+	bool Match(string_t &str) {
+		if (!has_escape) {
+			return TemplatedLikeOperator<'%', '_', false, READER>(str.GetData(), str.GetSize(), pattern.GetData(),
+			                                                      pattern.GetSize(), '\0');
+		}
+		return TemplatedLikeOperator<'%', '_', true, READER>(str.GetData(), str.GetSize(), pattern.GetData(),
+		                                                     pattern.GetSize(), escape);
+	}
+
+	string_t pattern;
+	bool has_escape;
+	char escape;
+	bool ascii;
+};
+
+struct ILikeMatcher {
+	explicit ILikeMatcher(const ILikePattern &lowered_p) : lowered(lowered_p) {
+		auto size = lowered.pattern.GetSize();
+		if (!lowered.pattern.IsInlined()) {
+			auto copy = buffer.Reserve(size);
+			memcpy(copy, lowered.pattern.GetData(), size);
+			lowered.pattern = string_t(copy, UnsafeNumericCast<uint32_t>(size));
+		}
+		// Build a case-insensitive matcher from the lowercased pattern. Returns null for patterns with '_' or only
+		// '%'; in that case we fall back to the generic matcher, which folds ASCII case as it reads a string that is
+		// not lowercased.
+		matcher = LikeMatcher::CreateLiteralMatcher(string(lowered.pattern.GetData(), size), lowered.has_escape,
+		                                            lowered.escape);
+	}
+
+	template <bool KNOWN_ASCII>
+	bool Match(string_t &str, ILikeBuffer &lowered_str) {
+		if (!KNOWN_ASCII) {
+			auto ascii_end = FirstNonAscii(str.GetData(), str.GetSize());
+			if (ascii_end != str.GetSize()) {
+				return MatchNonAscii(str, ascii_end, lowered_str);
+			}
+		}
+		return MatchUnlowered(str);
+	}
+
+	bool MatchUnlowered(string_t &str) {
+		if (matcher) {
+			return matcher->Match<true>(str);
+		}
+		return lowered.Match<ASCIILCaseReader>(str);
+	}
+
+	DUCKDB_NOINLINE bool MatchNonAscii(string_t &str, idx_t ascii_end, ILikeBuffer &lowered_str) {
+		if (!lowered.MustLower(str, ascii_end)) {
+			return MatchUnlowered(str);
+		}
+		return MatchLowered(str, lowered_str);
+	}
+
+	DUCKDB_NOINLINE bool MatchLowered(string_t &str, ILikeBuffer &lowered_str) {
+		auto str_lcase = lowered_str.Lower(str);
+		if (matcher) {
+			return matcher->Match(str_lcase);
+		}
+		return lowered.Match(str_lcase);
+	}
+
+	ILikeBuffer buffer;
+	ILikePattern lowered;
+	unique_ptr<LikeMatcher> matcher;
+};
+
+struct ILikeLocalState : public FunctionLocalState {
+	ILikePattern LowerPattern(string_t input, string_t escape) {
 		char escape_char = GetEscapeChar(escape);
-		return escape.GetSize() == 0 ? LikeOperatorFunction(str, pattern)
-		                             : LikeOperatorFunction(str, pattern, escape_char);
+		bool has_escape = escape.GetSize() != 0;
+		if (has_escape && StringUtil::CharacterIsAlpha(escape_char) &&
+		    CaseCanChangeEscapes(input.GetData(), input.GetSize(), escape_char)) {
+			auto result = escaped.Reserve(2 * input.GetSize());
+			auto size = WithBackslashEscape(input.GetData(), input.GetSize(), escape_char, result);
+			input = string_t(result, UnsafeNumericCast<uint32_t>(size));
+			escape_char = '\\';
+		}
+		auto lowered = pattern.Lower(input);
+		auto ascii = FirstNonAscii(lowered.GetData(), lowered.GetSize()) == lowered.GetSize();
+		return {lowered, has_escape, escape_char, ascii};
 	}
+
+	// reusable scratch buffer for the strings that must be lowercased (grown on demand)
+	ILikeBuffer str;
+	ILikeBuffer escaped;
+	ILikeBuffer pattern;
+	string constant_pattern;
+	string constant_escape;
+	unique_ptr<ILikeMatcher> constant_matcher;
 };
 
-struct NotLikeEscapeOperator {
-	template <class TA, class TB, class TC>
-	static inline bool Operation(TA str, TB pattern, TC escape) {
-		return !LikeEscapeOperator::Operation(str, pattern, escape);
-	}
-};
-
-struct LikeOperator {
-	template <class TA, class TB, class TR>
-	static inline TR Operation(TA str, TB pattern) {
-		return LikeOperatorFunction(str, pattern, '\\');
-	}
-};
-
-template <bool HAS_ESCAPE>
-bool ILikeOperatorFunctionInternal(string_t &str, string_t &pattern, char escape) {
-	auto str_data = str.GetData();
-	auto str_size = str.GetSize();
-	auto pat_data = pattern.GetData();
-	auto pat_size = pattern.GetSize();
-
-	// lowercase both the str and the pattern
-	idx_t str_llength = LowerLength(str_data, str_size);
-	auto str_ldata = make_unsafe_uniq_array_uninitialized<char>(str_llength);
-	LowerCase(str_data, str_size, str_ldata.get());
-
-	idx_t pat_llength = LowerLength(pat_data, pat_size);
-	auto pat_ldata = make_unsafe_uniq_array_uninitialized<char>(pat_llength);
-	LowerCase(pat_data, pat_size, pat_ldata.get());
-	string_t str_lcase(str_ldata.get(), UnsafeNumericCast<uint32_t>(str_llength));
-	string_t pat_lcase(pat_ldata.get(), UnsafeNumericCast<uint32_t>(pat_llength));
-	if (!HAS_ESCAPE) {
-		return LikeOperatorFunction(str_lcase, pat_lcase);
-	}
-	return LikeOperatorFunction(str_lcase, pat_lcase, escape);
+unique_ptr<FunctionLocalState> ILikeInitLocalState(ExpressionState &state, const BoundFunctionExpression &expr,
+                                                   FunctionData *bind_data) {
+	return make_uniq<ILikeLocalState>();
 }
 
-bool ILikeOperatorFunction(string_t &str, string_t &pattern) {
-	return ILikeOperatorFunctionInternal<false>(str, pattern, '\0');
+template <bool KNOWN_ASCII>
+bool ILikeOperatorFunction(ILikeLocalState &lstate, string_t str, string_t pattern, string_t escape) {
+	auto pat_lcase = lstate.LowerPattern(pattern, escape);
+	if (!KNOWN_ASCII) {
+		auto ascii_end = FirstNonAscii(str.GetData(), str.GetSize());
+		if (ascii_end != str.GetSize() && pat_lcase.MustLower(str, ascii_end)) {
+			auto str_lcase = lstate.str.Lower(str);
+			return pat_lcase.Match(str_lcase);
+		}
+	}
+	return pat_lcase.Match<ASCIILCaseReader>(str);
 }
-
-bool ILikeOperatorFunction(string_t &str, string_t &pattern, char escape) {
-	return ILikeOperatorFunctionInternal<true>(str, pattern, escape);
-}
-
-struct ILikeEscapeOperator {
-	template <class TA, class TB, class TC>
-	static inline bool Operation(TA str, TB pattern, TC escape) {
-		char escape_char = GetEscapeChar(escape);
-		return escape.GetSize() == 0 ? ILikeOperatorFunction(str, pattern)
-		                             : ILikeOperatorFunction(str, pattern, escape_char);
-	}
-};
-
-struct NotILikeEscapeOperator {
-	template <class TA, class TB, class TC>
-	static inline bool Operation(TA str, TB pattern, TC escape) {
-		return !ILikeEscapeOperator::Operation(str, pattern, escape);
-	}
-};
-
-struct ILikeOperator {
-	template <class TA, class TB, class TR>
-	static inline TR Operation(TA str, TB pattern) {
-		return ILikeOperatorFunction(str, pattern, '\\');
-	}
-};
-
-struct NotLikeOperator {
-	template <class TA, class TB, class TR>
-	static inline TR Operation(TA str, TB pattern) {
-		return !LikeOperatorFunction(str, pattern, '\\');
-	}
-};
-
-struct NotILikeOperator {
-	template <class TA, class TB, class TR>
-	static inline TR Operation(TA str, TB pattern) {
-		return !ILikeOperator::Operation<TA, TB, TR>(str, pattern);
-	}
-};
-
-struct ILikeOperatorASCII {
-	template <class TA, class TB, class TR>
-	static inline TR Operation(TA str, TB pattern) {
-		return TemplatedLikeOperator<'%', '_', true, ASCIILCaseReader>(str.GetData(), str.GetSize(), pattern.GetData(),
-		                                                               pattern.GetSize(), '\\');
-	}
-};
-
-struct NotILikeOperatorASCII {
-	template <class TA, class TB, class TR>
-	static inline TR Operation(TA str, TB pattern) {
-		return !ILikeOperatorASCII::Operation<TA, TB, TR>(str, pattern);
-	}
-};
 
 struct GlobOperator {
 	template <class TA, class TB, class TR>
@@ -518,143 +745,111 @@ struct GlobOperator {
 	}
 };
 
-// This can be moved to the scalar_function class
-template <typename FUNC>
+template <bool INVERT>
 void LikeEscapeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	const auto &str = args.data[0];
 	const auto &pattern = args.data[1];
 	const auto &escape = args.data[2];
 
+	if (escape.GetVectorType() == VectorType::CONSTANT_VECTOR && !ConstantVector::IsNull(escape)) {
+		auto escape_str = *ConstantVector::GetData<string_t>(escape);
+		if (escape_str.GetSize() <= 1) {
+			auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<LikeLocalState>();
+			LikeMatchPatterns<INVERT>(lstate, str, pattern, escape_str.GetSize() == 1, GetEscapeChar(escape_str),
+			                          result);
+			return;
+		}
+	}
 	TernaryExecutor::Execute<string_t, string_t, string_t, bool>(
-	    str, pattern, escape, result, FUNC::template Operation<string_t, string_t, string_t>);
+	    str, pattern, escape, result, [&](string_t str, string_t pattern, string_t escape) {
+		    bool match = LikeEscapeOperator(str, pattern, escape);
+		    return INVERT ? !match : match;
+	    });
 }
 
-// Execution function for ILIKE / NOT ILIKE ... ESCAPE. Mirrors ILikeFunction: when the pattern and escape are
-// both constant, lowercase the pattern once and reuse a scratch buffer for the per-row string lowercasing. If the
-// escape character does not occur in the pattern, escape handling is a no-op, so we build the case-folded
-// LikeMatcher and use the fast SIMD contains path; otherwise we fall back to the generic escape-aware matcher on
-// the lowercased values. Non-constant pattern/escape falls back to the per-row ternary path.
+template <bool INVERT, bool KNOWN_ASCII>
+void ILikeConstantPattern(ILikeLocalState &lstate, const Vector &str_vec, string_t pattern, string_t escape,
+                          Vector &result) {
+	if (!lstate.constant_matcher || pattern != lstate.constant_pattern || escape != lstate.constant_escape) {
+		lstate.constant_matcher.reset();
+		lstate.constant_pattern.assign(pattern.GetData(), pattern.GetSize());
+		lstate.constant_escape.assign(escape.GetData(), escape.GetSize());
+		// lowercase the pattern exactly once, up front
+		lstate.constant_matcher = make_uniq<ILikeMatcher>(lstate.LowerPattern(pattern, escape));
+	}
+	auto &matcher = *lstate.constant_matcher;
+	UnaryExecutor::Execute<string_t, bool>(str_vec, result, [&](string_t str) {
+		bool match = matcher.Match<KNOWN_ASCII>(str, lstate.str);
+		return INVERT ? !match : match;
+	});
+}
+
+// Execution function for ILIKE / NOT ILIKE ... ESCAPE. Mirrors ILikeFunction: when every row has the same pattern
+// and escape, lowercase the pattern once and reuse a scratch buffer for the strings that must be lowercased.
 template <bool INVERT>
 void ILikeEscapeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<ILikeLocalState>();
 	auto &str_vec = args.data[0];
 	auto &pattern_vec = args.data[1];
 	auto &escape_vec = args.data[2];
 
-	if (pattern_vec.GetVectorType() == VectorType::CONSTANT_VECTOR && !ConstantVector::IsNull(pattern_vec) &&
-	    escape_vec.GetVectorType() == VectorType::CONSTANT_VECTOR && !ConstantVector::IsNull(escape_vec)) {
-		auto pattern = *ConstantVector::GetData<string_t>(pattern_vec);
-		auto escape = *ConstantVector::GetData<string_t>(escape_vec);
-		char escape_char = GetEscapeChar(escape);
-		bool has_escape = escape.GetSize() != 0;
-
-		// lowercase the pattern exactly once, up front
-		idx_t pat_llength = LowerLength(pattern.GetData(), pattern.GetSize());
-		auto pat_ldata = make_unsafe_uniq_array_uninitialized<char>(pat_llength);
-		LowerCase(pattern.GetData(), pattern.GetSize(), pat_ldata.get());
-		string_t pat_lcase(pat_ldata.get(), UnsafeNumericCast<uint32_t>(pat_llength));
-
-		// the matcher cannot honor escape semantics, so only use it when the escape char never appears in the
-		// (lowercased) pattern, in which case escape is irrelevant and the pattern is a plain LIKE pattern
-		unique_ptr<LikeMatcher> matcher;
-		bool escape_active = has_escape && memchr(pat_lcase.GetData(), escape_char, pat_lcase.GetSize()) != nullptr;
-		if (!escape_active) {
-			matcher = LikeMatcher::CreateLikeMatcher(string(pat_lcase.GetData(), pat_lcase.GetSize()));
-		}
-
-		// reusable scratch buffer for lowercasing each string value (grown on demand)
-		idx_t scratch_size = 0;
-		unsafe_unique_array<char> scratch;
-		UnaryExecutor::Execute<string_t, bool>(str_vec, result, args.size(), [&](string_t str) {
-			idx_t str_llength = LowerLength(str.GetData(), str.GetSize());
-			if (str_llength > scratch_size) {
-				scratch = make_unsafe_uniq_array_uninitialized<char>(str_llength);
-				scratch_size = str_llength;
-			}
-			LowerCase(str.GetData(), str.GetSize(), scratch.get());
-			string_t str_lcase(scratch.get(), UnsafeNumericCast<uint32_t>(str_llength));
-			bool match = matcher ? matcher->Match(str_lcase)
-			                     : (has_escape ? LikeOperatorFunction(str_lcase, pat_lcase, escape_char)
-			                                   : LikeOperatorFunction(str_lcase, pat_lcase));
-			return INVERT ? !match : match;
-		});
+	string_t pattern;
+	string_t escape;
+	if (UniformPattern(pattern_vec, pattern) && UniformPattern(escape_vec, escape)) {
+		ILikeConstantPattern<INVERT, false>(lstate, str_vec, pattern, escape, result);
 		return;
 	}
-	// non-constant pattern/escape: fall back to the generic per-row implementation
-	if (INVERT) {
-		TernaryExecutor::Execute<string_t, string_t, string_t, bool>(
-		    str_vec, pattern_vec, escape_vec, result, NotILikeEscapeOperator::Operation<string_t, string_t, string_t>);
-	} else {
-		TernaryExecutor::Execute<string_t, string_t, string_t, bool>(
-		    str_vec, pattern_vec, escape_vec, result, ILikeEscapeOperator::Operation<string_t, string_t, string_t>);
-	}
+	// the pattern or escape differs between rows: fall back to the generic per-row implementation
+	TernaryExecutor::Execute<string_t, string_t, string_t, bool>(
+	    str_vec, pattern_vec, escape_vec, result, [&](string_t str, string_t pattern, string_t escape) {
+		    bool match = ILikeOperatorFunction<false>(lstate, str, pattern, escape);
+		    return INVERT ? !match : match;
+	    });
 }
 
-template <class ASCII_OP>
+// Execution function for ILIKE / NOT ILIKE.
+// When every row has the same pattern we lowercase it exactly once instead of once per row, and a string that must
+// be lowercased goes through a single scratch buffer instead of a heap allocation per row.
+template <bool INVERT, bool KNOWN_ASCII>
+void ILikeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<ILikeLocalState>();
+	auto &pattern_vec = input.data[1];
+	string_t escape("\\", 1);
+	string_t pattern;
+	if (UniformPattern(pattern_vec, pattern)) {
+		ILikeConstantPattern<INVERT, KNOWN_ASCII>(lstate, input.data[0], pattern, escape, result);
+		return;
+	}
+	// the pattern differs between rows: fall back to the generic per-row implementation
+	BinaryExecutor::Execute<string_t, string_t, bool>(
+	    input.data[0], pattern_vec, result, [&](string_t str, string_t pattern) {
+		    bool match = ILikeOperatorFunction<KNOWN_ASCII>(lstate, str, pattern, escape);
+		    return INVERT ? !match : match;
+	    });
+}
+
+template <bool INVERT>
 unique_ptr<BaseStatistics> ILikePropagateStats(ClientContext &context, FunctionStatisticsInput &input) {
 	auto &child_stats = input.child_stats;
 	auto &expr = input.expr;
 	D_ASSERT(child_stats.size() >= 1);
 	// can only propagate stats if the children have stats
 	if (!StringStats::CanContainUnicode(child_stats[0])) {
-		expr.FunctionMutable().SetFunctionCallback(ScalarFunction::BinaryFunction<string_t, string_t, bool, ASCII_OP>);
+		expr.FunctionMutable().SetFunctionCallback(ILikeFunction<INVERT, true>);
 	}
 	return nullptr;
 }
 
-// Execution function for ILIKE / NOT ILIKE on the (possibly) Unicode path.
-// When the pattern is constant we lowercase it exactly once instead of once per row, and we reuse a single
-// scratch buffer to lowercase each string value instead of heap-allocating per row. This avoids two heap
-// allocations + a redundant pattern case-fold on every row that the generic ILikeOperatorFunction incurs.
-// (The ASCII-only fast path installed by ILikePropagateStats already avoids allocations, so it is unaffected.)
-template <class OP, bool INVERT>
-void ILikeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
-	auto &pattern_vec = input.data[1];
-	if (pattern_vec.GetVectorType() == VectorType::CONSTANT_VECTOR && !ConstantVector::IsNull(pattern_vec)) {
-		// constant pattern: lowercase it exactly once, up front
-		auto pattern = *ConstantVector::GetData<string_t>(pattern_vec);
-		idx_t pat_llength = LowerLength(pattern.GetData(), pattern.GetSize());
-		auto pat_ldata = make_unsafe_uniq_array_uninitialized<char>(pat_llength);
-		LowerCase(pattern.GetData(), pattern.GetSize(), pat_ldata.get());
-		string_t pat_lcase(pat_ldata.get(), UnsafeNumericCast<uint32_t>(pat_llength));
-
-		// Build a case-insensitive matcher from the lowercased pattern. Because both the pattern and each string
-		// value are lowercased, a case-sensitive LikeMatcher over lowercased data is equivalent to ILIKE, and it
-		// uses the fast SIMD FindStrInStr/memcmp contains path. Returns null for patterns with '_' or only '%';
-		// in that case we fall back to the generic recursive matcher on the lowercased values.
-		auto matcher = LikeMatcher::CreateLikeMatcher(string(pat_lcase.GetData(), pat_lcase.GetSize()));
-
-		// reusable scratch buffer for lowercasing each string value (grown on demand)
-		idx_t scratch_size = 0;
-		unsafe_unique_array<char> scratch;
-		UnaryExecutor::Execute<string_t, bool>(input.data[0], result, input.size(), [&](string_t str) {
-			idx_t str_llength = LowerLength(str.GetData(), str.GetSize());
-			if (str_llength > scratch_size) {
-				scratch = make_unsafe_uniq_array_uninitialized<char>(str_llength);
-				scratch_size = str_llength;
-			}
-			LowerCase(str.GetData(), str.GetSize(), scratch.get());
-			string_t str_lcase(scratch.get(), UnsafeNumericCast<uint32_t>(str_llength));
-			bool match = matcher ? matcher->Match(str_lcase) : LikeOperatorFunction(str_lcase, pat_lcase, '\\');
-			return INVERT ? !match : match;
-		});
-		return;
-	}
-	// non-constant pattern: fall back to the generic per-row implementation
-	BinaryExecutor::ExecuteStandard<string_t, string_t, bool, OP>(input.data[0], input.data[1], result, input.size());
-}
-
-template <class OP, bool INVERT>
+template <bool INVERT>
 void RegularLikeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	if (func_expr.BindInfo()) {
 		auto &matcher = func_expr.BindInfo()->Cast<LikeMatcher>();
 		// use fast like matcher
-		UnaryExecutor::Execute<string_t, bool>(input.data[0], result, [&](string_t input) {
-			return INVERT ? !matcher.Match(input) : matcher.Match(input);
-		});
+		MatchAll<INVERT>(matcher, input.data[0], result);
 	} else {
-		// use generic like matcher
-		BinaryExecutor::ExecuteStandard<string_t, string_t, bool, OP>(input.data[0], input.data[1], result);
+		auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<LikeLocalState>();
+		LikeMatchPatterns<INVERT>(lstate, input.data[0], input.data[1], true, '\\', result);
 	}
 }
 
@@ -662,7 +857,7 @@ void RegularLikeFunction(DataChunk &input, ExpressionState &state, Vector &resul
 
 ScalarFunction NotLikeFun::GetFunction() {
 	ScalarFunction not_like("!~~", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
-	                        RegularLikeFunction<NotLikeOperator, true>, LikeBindFunction);
+	                        RegularLikeFunction<true>, LikeBindFunction, nullptr, LikeInitLocalState);
 	not_like.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	not_like.GetSignature().GetParameter(0).SetName("string");
 	not_like.GetSignature().GetParameter(1).SetName("pattern");
@@ -680,7 +875,7 @@ ScalarFunction GlobPatternFun::GetFunction() {
 
 ScalarFunction ILikeFun::GetFunction() {
 	ScalarFunction ilike("~~*", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
-	                     ILikeFunction<ILikeOperator, false>, nullptr, ILikePropagateStats<ILikeOperatorASCII>);
+	                     ILikeFunction<false, false>, nullptr, ILikePropagateStats<false>, ILikeInitLocalState);
 	ilike.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	ilike.GetSignature().GetParameter(0).SetName("string");
 	ilike.GetSignature().GetParameter(1).SetName("pattern");
@@ -689,8 +884,7 @@ ScalarFunction ILikeFun::GetFunction() {
 
 ScalarFunction NotILikeFun::GetFunction() {
 	ScalarFunction not_ilike("!~~*", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
-	                         ILikeFunction<NotILikeOperator, true>, nullptr,
-	                         ILikePropagateStats<NotILikeOperatorASCII>);
+	                         ILikeFunction<true, false>, nullptr, ILikePropagateStats<true>, ILikeInitLocalState);
 	not_ilike.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	not_ilike.GetSignature().GetParameter(0).SetName("string");
 	not_ilike.GetSignature().GetParameter(1).SetName("pattern");
@@ -699,7 +893,7 @@ ScalarFunction NotILikeFun::GetFunction() {
 
 ScalarFunction LikeFun::GetFunction() {
 	ScalarFunction like("~~", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
-	                    RegularLikeFunction<LikeOperator, false>, LikeBindFunction);
+	                    RegularLikeFunction<false>, LikeBindFunction, nullptr, LikeInitLocalState);
 	like.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	like.GetSignature().GetParameter(0).SetName("string");
 	like.GetSignature().GetParameter(1).SetName("pattern");
@@ -707,8 +901,8 @@ ScalarFunction LikeFun::GetFunction() {
 }
 
 ScalarFunction NotLikeEscapeFun::GetFunction() {
-	ScalarFunction not_like_escape("not_like_escape", {}, LogicalType::BOOLEAN,
-	                               LikeEscapeFunction<NotLikeEscapeOperator>);
+	ScalarFunction not_like_escape("not_like_escape", {}, LogicalType::BOOLEAN, LikeEscapeFunction<true>, nullptr,
+	                               nullptr, LikeInitLocalState);
 	not_like_escape.GetSignature()
 	    .AddParameter("string", LogicalType::VARCHAR)
 	    .AddParameter("like_specifier", LogicalType::VARCHAR)
@@ -718,7 +912,8 @@ ScalarFunction NotLikeEscapeFun::GetFunction() {
 }
 
 ScalarFunction IlikeEscapeFun::GetFunction() {
-	ScalarFunction ilike_escape("ilike_escape", {}, LogicalType::BOOLEAN, ILikeEscapeFunction<false>);
+	ScalarFunction ilike_escape("ilike_escape", {}, LogicalType::BOOLEAN, ILikeEscapeFunction<false>, nullptr, nullptr,
+	                            ILikeInitLocalState);
 	ilike_escape.GetSignature()
 	    .AddParameter("string", LogicalType::VARCHAR)
 	    .AddParameter("like_specifier", LogicalType::VARCHAR)
@@ -728,7 +923,8 @@ ScalarFunction IlikeEscapeFun::GetFunction() {
 }
 
 ScalarFunction NotIlikeEscapeFun::GetFunction() {
-	ScalarFunction not_ilike_escape("not_ilike_escape", {}, LogicalType::BOOLEAN, ILikeEscapeFunction<true>);
+	ScalarFunction not_ilike_escape("not_ilike_escape", {}, LogicalType::BOOLEAN, ILikeEscapeFunction<true>, nullptr,
+	                                nullptr, ILikeInitLocalState);
 	not_ilike_escape.GetSignature()
 	    .AddParameter("string", LogicalType::VARCHAR)
 	    .AddParameter("like_specifier", LogicalType::VARCHAR)
@@ -737,7 +933,8 @@ ScalarFunction NotIlikeEscapeFun::GetFunction() {
 	return not_ilike_escape;
 }
 ScalarFunction LikeEscapeFun::GetFunction() {
-	ScalarFunction like_escape("like_escape", {}, LogicalType::BOOLEAN, LikeEscapeFunction<LikeEscapeOperator>);
+	ScalarFunction like_escape("like_escape", {}, LogicalType::BOOLEAN, LikeEscapeFunction<false>, nullptr, nullptr,
+	                           LikeInitLocalState);
 	like_escape.GetSignature()
 	    .AddParameter("string", LogicalType::VARCHAR)
 	    .AddParameter("like_specifier", LogicalType::VARCHAR)
