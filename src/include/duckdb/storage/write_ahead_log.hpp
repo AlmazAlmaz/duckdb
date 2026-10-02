@@ -65,6 +65,8 @@ public:
 	idx_t GetCheckpointIteration();
 	//! Gets the total bytes written to the WAL since startup
 	idx_t GetTotalWritten() const;
+	idx_t GetFlushedOffset() const;
+	idx_t GetDurableOffset() const;
 
 	//! A WAL is initialized, if a writer to a file exists.
 	bool Initialized() const;

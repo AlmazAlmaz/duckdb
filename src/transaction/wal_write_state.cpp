@@ -24,14 +24,18 @@
 #include "duckdb/storage/write_ahead_log.hpp"
 #include "duckdb/transaction/append_info.hpp"
 #include "duckdb/transaction/delete_info.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/transaction_manager.hpp"
 #include "duckdb/transaction/update_info.hpp"
+
+#include <absl/algorithm/container.h>
 
 namespace duckdb {
 
 WALWriteState::WALWriteState(DuckTransaction &transaction_p, optional_ptr<WriteAheadLog> log,
-                             optional_ptr<StorageCommitState> commit_state, optional_ptr<WriteAheadLog> catalog_log)
-    : transaction(transaction_p), log(log), commit_state(commit_state), catalog_log(catalog_log),
+                             optional_ptr<StorageCommitState> commit_state,
+                             optional_ptr<vector<CatalogRunEntry>> catalog_run)
+    : transaction(transaction_p), log(log), commit_state(commit_state), catalog_run(catalog_run),
       current_table_entry(nullptr) {
 }
 
@@ -119,7 +123,7 @@ static bool ChangesTableStorage(CatalogEntry &entry, const AlterInfo *alter_info
 	}
 }
 
-void WALWriteState::WriteCatalogEntry(CatalogEntry &entry, data_ptr_t dataptr) {
+void WALWriteState::WriteCatalogEntry(CatalogEntry &entry, idx_t change, data_ptr_t dataptr) {
 	if (entry.temporary || entry.Parent().temporary) {
 		return;
 	}
@@ -139,37 +143,56 @@ void WALWriteState::WriteCatalogEntry(CatalogEntry &entry, data_ptr_t dataptr) {
 		deserializer.End();
 	}
 	auto alter_info = parse_info ? &parse_info->Cast<AlterInfo>() : nullptr;
-	if (!catalog_log) {
-		WriteCatalogEntry(Log(), entry, alter_info);
+	if (!catalog_run) {
+		WriteCatalogEntry(Log(), entry, alter_info, true);
 		return;
 	}
-	if (!catalog_selected) {
-		catalog_log->WriteUseCatalog(transaction.manager.GetDB().oid);
-		catalog_selected = true;
-	}
-	WriteCatalogEntry(*catalog_log, entry, alter_info);
-	if (!log) {
-		return;
-	}
-	if (ChangesTableStorage(entry, alter_info)) {
-		if (entry.type == CatalogType::TABLE_ENTRY) {
-			SwitchTable(entry.Cast<DuckTableEntry>(), UndoFlags::CATALOG_ENTRY);
+	if (log) {
+		if (ChangesTableStorage(entry, alter_info)) {
+			if (entry.type == CatalogType::TABLE_ENTRY) {
+				SwitchTable(entry.Cast<DuckTableEntry>(), UndoFlags::CATALOG_ENTRY);
+			}
+			WriteCatalogEntry(*log, entry, alter_info, true);
+		} else {
+			auto index_table = IndexTableInfo(entry, alter_info);
+			if (index_table) {
+				log->WriteSetTable(QualifiedName(index_table->GetSchemaPath(), index_table->GetTableName()),
+				                   index_table->GetTableOid());
+				current_table_entry = nullptr;
+				WriteCatalogEntry(*log, entry, alter_info, true);
+			}
 		}
-		WriteCatalogEntry(*log, entry, alter_info);
-		return;
 	}
-	auto index_table = IndexTableInfo(entry, alter_info);
-	if (index_table) {
-		log->WriteSetTable(QualifiedName(index_table->GetSchemaPath(), index_table->GetTableName()),
-		                   index_table->GetTableOid());
-		current_table_entry = nullptr;
-		WriteCatalogEntry(*log, entry, alter_info);
+	catalog_run->emplace_back(entry, change, std::move(parse_info));
+}
+
+void WALWriteState::WriteCatalogRuns(WriteAheadLog &catalog_log, const vector<CatalogRun> &runs) {
+	struct Change {
+		idx_t catalog_oid;
+		reference<const CatalogRunEntry> entry;
+	};
+	vector<Change> changes;
+	for (auto &run : runs) {
+		for (auto &run_entry : run.entries.get()) {
+			changes.push_back(Change {run.catalog_oid, run_entry});
+		}
+	}
+	absl::c_sort(changes, [](const Change &a, const Change &b) { return a.entry.get().change < b.entry.get().change; });
+	optional_idx catalog_oid;
+	for (auto &change : changes) {
+		if (!catalog_oid.IsValid() || catalog_oid.GetIndex() != change.catalog_oid) {
+			catalog_oid = change.catalog_oid;
+			catalog_log.WriteUseCatalog(change.catalog_oid);
+		}
+		auto &run_entry = change.entry.get();
+		auto alter_info = run_entry.alter_info ? &run_entry.alter_info->Cast<AlterInfo>() : nullptr;
+		WriteCatalogEntry(catalog_log, run_entry.entry, alter_info, false);
 	}
 }
 
-void WALWriteState::WriteCatalogEntry(WriteAheadLog &target, CatalogEntry &entry, const AlterInfo *alter_info) {
+void WALWriteState::WriteCatalogEntry(WriteAheadLog &target, CatalogEntry &entry, const AlterInfo *alter_info,
+                                      bool with_index_storage) {
 	auto &parent = entry.Parent();
-	const bool with_index_storage = &target != catalog_log.get();
 
 	switch (parent.type) {
 	case CatalogType::TRIGGER_ENTRY:
@@ -404,7 +427,8 @@ void WALWriteState::CommitEntry(UndoFlags type, data_ptr_t data) {
 		auto catalog_entry = Load<CatalogEntry *>(data);
 		D_ASSERT(catalog_entry->HasParent());
 		// push the catalog update to the WAL
-		WriteCatalogEntry(*catalog_entry, data + sizeof(CatalogEntry *));
+		WriteCatalogEntry(*catalog_entry, Load<idx_t>(data + sizeof(CatalogEntry *)),
+		                  data + DuckTransaction::CATALOG_UNDO_HEADER);
 		break;
 	}
 	case UndoFlags::INSERT_TUPLE: {
@@ -435,8 +459,10 @@ void WALWriteState::CommitEntry(UndoFlags type, data_ptr_t data) {
 	case UndoFlags::ATTACHED_DATABASE:
 		break;
 	case UndoFlags::SEQUENCE_VALUE: {
-		auto info = reinterpret_cast<SequenceValue *>(data);
-		Log().WriteSequenceValue(*info);
+		if (!catalog_run) {
+			auto info = reinterpret_cast<SequenceValue *>(data);
+			Log().WriteSequenceValue(*info);
+		}
 		break;
 	}
 	default:
