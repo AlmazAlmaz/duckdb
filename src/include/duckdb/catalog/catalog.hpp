@@ -28,6 +28,7 @@
 #include "duckdb/storage/storage_index.hpp"
 #include "duckdb/storage/table/row_group_collection.hpp"
 #include "duckdb/storage/table/table_index_list.hpp"
+#include "duckdb/storage/write_ahead_log.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 
 #include <functional>
@@ -148,11 +149,25 @@ public:
 		return Compatibility() == SqlCompatibility::POSTGRES;
 	}
 
+	virtual bool UsesCatalogLog() const {
+		return false;
+	}
+	virtual shared_ptr<WriteAheadLog> CatalogLog() {
+		return nullptr;
+	}
+	virtual Catalog &ReplayUseCatalog(ClientContext &context, idx_t catalog_oid);
+	virtual void OnCatalogLogPrepared() {
+	}
+	virtual void OnCatalogLogDecided() {
+	}
+	virtual void EndCatalogLogCommit() {
+	}
 	virtual bool AppendLocalIndexes(DuckTransaction &transaction, TableIndexList &index_list,
 	                                RowGroupCollection &source, const vector<StorageIndex> &mapped_column_ids,
 	                                row_t row_start, ErrorData &error) {
 		return false;
 	}
+
 	virtual void Initialize(bool load_builtin) = 0;
 	virtual void Initialize(optional_ptr<ClientContext> context, bool load_builtin);
 	virtual void FinalizeLoad(optional_ptr<ClientContext> context);
