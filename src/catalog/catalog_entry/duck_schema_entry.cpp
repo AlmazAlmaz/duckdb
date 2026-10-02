@@ -276,14 +276,21 @@ bool DuckSchemaEntry::DropEntryInternal(CatalogTransaction transaction, CatalogE
 	return true;
 }
 
-static void CreateSerialSequences(CatalogTransaction transaction, DuckSchemaEntry &schema, BoundCreateTableInfo &info) {
+struct SerialSequence {
+	reference<SequenceCatalogEntry> sequence;
+	Identifier column;
+};
+
+static vector<SerialSequence> CreateSerialSequences(CatalogTransaction transaction, DuckSchemaEntry &schema,
+                                                    BoundCreateTableInfo &info) {
+	vector<SerialSequence> created;
 	auto &table = info.Base();
 	if (info.serial_sequences.empty()) {
-		return;
+		return created;
 	}
 	if (table.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT &&
 	    schema.GetEntry(transaction, CatalogType::TABLE_ENTRY, table.GetTableName())) {
-		return;
+		return created;
 	}
 	for (auto &serial : info.serial_sequences) {
 		CreateSequenceInfo sequence_info;
@@ -292,7 +299,8 @@ static void CreateSerialSequences(CatalogTransaction transaction, DuckSchemaEntr
 		sequence_info.max_value =
 		    Value::MaximumValue(table.columns.GetColumn(serial.column).Type()).GetValue<int64_t>();
 		sequence_info.permissions = std::move(serial.permissions);
-		auto &sequence = *schema.CreateSequence(transaction, sequence_info);
+		auto &sequence = schema.CreateSequence(transaction, sequence_info)->Cast<SequenceCatalogEntry>();
+		created.push_back(SerialSequence {sequence, serial.column});
 		LogicalDependency dependency(sequence);
 		dependency.owned_by = true;
 		if (schema.catalog.Compatibility() == SqlCompatibility::POSTGRES) {
@@ -302,11 +310,18 @@ static void CreateSerialSequences(CatalogTransaction transaction, DuckSchemaEntr
 		}
 		table.dependencies.AddDependency(dependency);
 	}
+	return created;
 }
 
 optional_ptr<CatalogEntry> DuckSchemaEntry::CreateTable(CatalogTransaction transaction, BoundCreateTableInfo &info) {
-	CreateSerialSequences(transaction, *this, info);
+	auto serial_sequences = CreateSerialSequences(transaction, *this, info);
 	auto table = catalog.Cast<DuckCatalog>().MakeTableEntry(transaction, *this, info);
+	for (auto &serial : serial_sequences) {
+		const auto column = table->GetColumn(serial.column).CatalogOid();
+		if (column) {
+			serial.sequence.get().owner_column = column;
+		}
+	}
 	auto &dependencies = info.Base().dependencies;
 
 	vector<unique_ptr<AlterForeignKeyInfo>> fk_arrays;
@@ -397,7 +412,20 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::AddEntry(CatalogTransaction transact
 
 optional_ptr<CatalogEntry> DuckSchemaEntry::CreateSequence(CatalogTransaction transaction, CreateSequenceInfo &info) {
 	auto sequence = make_uniq<SequenceCatalogEntry>(catalog, *this, info);
-	return AddEntry(transaction, std::move(sequence), info.on_conflict);
+	auto result = AddEntry(transaction, std::move(sequence), info.on_conflict);
+	if (result && !info.owned_by.empty()) {
+		ChangeOwnershipInfo ownership(CatalogType::SEQUENCE_ENTRY, catalog.GetName(), name, result->name, Identifier(),
+		                              Identifier(), OnEntryNotFound::THROW_EXCEPTION);
+		ownership.owner_path = info.owned_by;
+		if (catalog.Compatibility() != SqlCompatibility::POSTGRES) {
+			auto owner_end = info.serial ? info.owned_by.end() - 1 : info.owned_by.end();
+			auto owner = QualifiedName(vector<Identifier>(info.owned_by.begin(), owner_end - 1), *(owner_end - 1));
+			ownership.owner_schema = owner.Schema().empty() ? name : owner.Schema();
+			ownership.owner_name = owner.Name();
+		}
+		Alter(transaction, ownership);
+	}
+	return result;
 }
 
 optional_ptr<CatalogEntry> DuckSchemaEntry::CreateType(CatalogTransaction transaction, CreateTypeInfo &info) {
@@ -524,6 +552,44 @@ static void DropIndexesOnRemovedColumn(DuckSchemaEntry &schema, CatalogTransacti
 	}
 }
 
+static vector<LogicalDependency> SequencesOwnedByRemovedColumn(Catalog &catalog, CatalogTransaction transaction,
+                                                               CatalogSet &tables, const Identifier &table_name,
+                                                               const RemoveColumnInfo &info) {
+	vector<LogicalDependency> owned;
+	auto entry = tables.GetEntry(transaction, table_name);
+	if (!entry || entry->type != CatalogType::TABLE_ENTRY) {
+		return owned;
+	}
+	auto &table = entry->Cast<TableCatalogEntry>();
+	if (!table.ColumnExists(info.removed_column)) {
+		return owned;
+	}
+	const auto column = table.GetColumn(info.removed_column).CatalogOid();
+	for (auto &owned_entry : catalog.GetDependencyManager()->OwnedEntries(transaction, table)) {
+		auto &sequence = owned_entry.get();
+		if (sequence.type == CatalogType::SEQUENCE_ENTRY &&
+		    sequence.Cast<SequenceCatalogEntry>().owner_column == optional_idx(column)) {
+			owned.emplace_back(sequence);
+		}
+	}
+	return owned;
+}
+
+static void ReownOwnedSequences(Catalog &catalog, CatalogTransaction transaction, CatalogEntry &table,
+                                const AlterPermissionsInfo &info) {
+	for (auto &owned : catalog.GetDependencyManager()->OwnedEntries(transaction, table)) {
+		auto &sequence = owned.get();
+		if (sequence.type != CatalogType::SEQUENCE_ENTRY) {
+			continue;
+		}
+		auto &sequence_schema = sequence.ParentSchema(transaction);
+		AlterPermissionsInfo reown(CatalogType::SEQUENCE_ENTRY, sequence_schema.GetQualifiedName(sequence.name));
+		reown.new_owner = info.new_owner;
+		reown.new_owner_id = info.new_owner_id;
+		sequence_schema.Alter(transaction, reown);
+	}
+}
+
 void DuckSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
 	if (info.type == AlterType::ALTER_PERMISSIONS && info.Cast<AlterPermissionsInfo>().all_in_schema) {
 		AlterAllInSchema(*this, transaction, info.Cast<AlterPermissionsInfo>());
@@ -553,7 +619,8 @@ void DuckSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
 
 	auto &set = GetCatalogSet(type);
 	if (info.type == AlterType::CHANGE_OWNERSHIP) {
-		if (!set.AlterOwnership(transaction, info.Cast<ChangeOwnershipInfo>())) {
+		if (!set.AlterEntry(transaction, info.GetQualifiedName().Name(), info) ||
+		    !set.AlterOwnership(transaction, info.Cast<ChangeOwnershipInfo>())) {
 			throw CatalogException("Couldn't change ownership!");
 		}
 	} else {
@@ -567,13 +634,37 @@ void DuckSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
 				                          info.Cast<DropConstraintInfo>().constraint_name);
 			}
 		}
+		vector<LogicalDependency> owned_sequences;
 		if (info.type == AlterType::ALTER_TABLE &&
 		    info.Cast<AlterTableInfo>().alter_table_type == AlterTableType::REMOVE_COLUMN &&
 		    catalog.Compatibility() == SqlCompatibility::POSTGRES && transaction.HasContext()) {
 			DropIndexesOnRemovedColumn(*this, transaction, set, name, info.Cast<RemoveColumnInfo>());
+			owned_sequences =
+			    SequencesOwnedByRemovedColumn(catalog, transaction, set, name, info.Cast<RemoveColumnInfo>());
 		}
 		if (!set.AlterEntry(transaction, name, info)) {
 			throw CatalogException::MissingEntry(type, name, string());
+		}
+		if (info.type == AlterType::ALTER_PERMISSIONS && !info.Cast<AlterPermissionsInfo>().new_owner.empty() &&
+		    catalog.Compatibility() == SqlCompatibility::POSTGRES) {
+			auto table = set.GetEntry(transaction, name);
+			if (table && table->type == CatalogType::TABLE_ENTRY) {
+				ReownOwnedSequences(catalog, transaction, *table, info.Cast<AlterPermissionsInfo>());
+			}
+		}
+		for (auto &owned : owned_sequences) {
+			auto sequence = catalog.GetDependencyManager()->LookupEntry(transaction, owned);
+			if (!sequence) {
+				continue;
+			}
+			catalog.GetDependencyManager()->RemoveOwnership(transaction, *sequence);
+			auto &owner_schema = sequence->ParentSchema(transaction);
+			DropInfo drop;
+			drop.type = CatalogType::SEQUENCE_ENTRY;
+			drop.SetQualifiedName(owner_schema.GetQualifiedName(sequence->name));
+			drop.if_not_found = OnEntryNotFound::RETURN_NULL;
+			drop.cascade = info.Cast<RemoveColumnInfo>().cascade;
+			owner_schema.DropEntry(transaction.GetContext(), drop);
 		}
 		// Detaching a foreign-key pair must also remove the dependency edge
 		// registered at CREATE, or the referenced (main-key) table stays undroppable.

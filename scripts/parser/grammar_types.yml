@@ -592,6 +592,7 @@ Expression:
     - CopyFileNameIdentifierColId
     - DatabasePath
     - UsingExpression
+    - SeqRestartValue
     - RelOptionArgumentOpt
     - ExpressionAlias
     - MeasuresElement
@@ -853,6 +854,8 @@ QualifiedName:
   by_value: false
   rules:
     - QualifiedSequenceName
+    - SeqOwner
+    - SeqOwnerNone
     - IdentifierOrStringLiteral
     - QualifiedTypeName
     - TypeNameAsQualifiedName
@@ -1682,7 +1685,10 @@ SequenceOptionEntry:
     - SeqNoMinMax
     - SeqStartWith
     - SeqCache
+    - SeqAsType
     - SeqOwnedBy
+    - AlterSequenceOption
+    - SeqRestart
 
 SetOperationTail:
   type: "pair<unique_ptr<SetOperationNode>, unique_ptr<SelectStatement>>"

@@ -16,6 +16,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
+#include "duckdb/parser/parsed_data/alter_sequence_info.hpp"
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/catalog/dependency_catalog_set.hpp"
@@ -759,6 +760,7 @@ catalog_entry_map_t<subdependency_set_t> DependencyManager::CheckDropDependencie
 	catalog_entry_set_t blocking_dependents;
 
 	auto info = GetLookupProperties(object);
+	const bool owners_depend = catalog.Compatibility() != SqlCompatibility::POSTGRES;
 	// Look through all the objects that depend on the 'object'
 	ScanDependents(transaction, info, [&](DependencyEntry &dep) {
 		// a nested schema depends on its parent schema; other schemas have no dependencies
@@ -766,8 +768,12 @@ catalog_entry_map_t<subdependency_set_t> DependencyManager::CheckDropDependencie
 		if (!entry) {
 			return;
 		}
+		const auto &flags = dep.Dependent().flags;
+		if (!owners_depend && flags.IsOwnedBy() && !flags.IsBlocking()) {
+			return;
+		}
 
-		if (!CascadeDrop(cascade, dep.Dependent().flags)) {
+		if (!CascadeDrop(cascade, flags)) {
 			// no cascade and there are objects that depend on this object: throw error
 			blocking_dependents.insert(*entry);
 		} else {
@@ -1027,8 +1033,15 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 		}
 		case AlterType::SET_COLUMN_COMMENT:
 		case AlterType::SET_COMMENT:
-		case AlterType::ALTER_PERMISSIONS: {
+		case AlterType::ALTER_PERMISSIONS:
+		case AlterType::CHANGE_OWNERSHIP: {
 			disallow_alter = false;
+			break;
+		}
+		case AlterType::ALTER_SEQUENCE: {
+			if (alter_info.Cast<AlterSequenceInfo>().alter_sequence_type == AlterSequenceType::RESTART_SEQUENCE) {
+				disallow_alter = false;
+			}
 			break;
 		}
 		default:
@@ -1129,6 +1142,24 @@ void DependencyManager::Scan(
 	}
 }
 
+catalog_entry_vector_t DependencyManager::OwnedEntries(CatalogTransaction transaction, CatalogEntry &owner) {
+	catalog_entry_vector_t result;
+	if (IsSystemEntry(owner)) {
+		return result;
+	}
+	lock_guard<mutex> write_lock(catalog.GetWriteLock());
+	ScanSubjects(transaction, GetLookupProperties(owner), [&](DependencyEntry &dep) {
+		if (!dep.Subject().flags.IsOwnership()) {
+			return;
+		}
+		auto entry = LookupEntry(transaction, dep);
+		if (entry) {
+			result.push_back(*entry);
+		}
+	});
+	return result;
+}
+
 optional_ptr<CatalogEntry> DependencyManager::OwnerOf(CatalogTransaction transaction, CatalogEntry &entry) {
 	optional_ptr<CatalogEntry> owner;
 	if (IsSystemEntry(entry)) {
@@ -1195,6 +1226,28 @@ void DependencyManager::AddOwnership(CatalogTransaction transaction, CatalogEntr
 	    /*subject = */ DependencySubject {GetLookupProperties(entry), DependencySubjectFlags().SetOwnership(),
 	                                      optional_idx()}};
 	CreateDependency(transaction, info);
+}
+
+void DependencyManager::RemoveOwnership(CatalogTransaction transaction, CatalogEntry &entry) {
+	if (IsSystemEntry(entry)) {
+		return;
+	}
+	vector<DependencyInfo> owners;
+	ScanDependents(transaction, GetLookupProperties(entry), [&](DependencyEntry &dep) {
+		if (dep.Dependent().flags.IsOwnedBy()) {
+			owners.push_back(DependencyInfo::FromDependent(dep));
+		}
+	});
+	for (auto &owner : owners) {
+		RemoveDependency(transaction, owner);
+		if (!owner.dependent.flags.IsBlocking()) {
+			continue;
+		}
+		DependencyInfo remaining {DependencyDependent {owner.dependent.entry, DependencyDependentFlags().SetBlocking(),
+		                                               owner.dependent.subdependencies},
+		                          DependencySubject {owner.subject.entry, DependencySubjectFlags(), optional_idx()}};
+		CreateDependency(transaction, remaining);
+	}
 }
 
 static string FormatString(const MangledEntryName &mangled) {

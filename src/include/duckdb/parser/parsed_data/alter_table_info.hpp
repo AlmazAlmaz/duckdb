@@ -10,6 +10,7 @@
 
 #include "duckdb/catalog/permissions.hpp"
 #include "duckdb/common/enums/trigger_type.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/parser/parsed_data/alter_info.hpp"
 #include "duckdb/parser/parsed_data/create_info.hpp"
 #include "duckdb/parser/column_definition.hpp"
@@ -37,6 +38,7 @@ struct ChangeOwnershipInfo : public AlterInfo {
 
 	Identifier owner_schema;
 	Identifier owner_name;
+	vector<Identifier> owner_path;
 
 public:
 	CatalogType GetCatalogType() const override;
@@ -281,6 +283,7 @@ struct AddColumnConstraints {
 	bool add_not_null = false;
 	bool add_unique = false;
 	bool add_primary_key = false;
+	bool serial = false;
 	bool explicit_null = false;
 };
 

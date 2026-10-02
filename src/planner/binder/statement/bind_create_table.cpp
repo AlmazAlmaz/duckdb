@@ -717,8 +717,8 @@ static void BindCreateTableConstraints(BoundCreateTableInfo &info, CatalogEntryR
 	}
 }
 
-static Identifier FreeSequenceName(CatalogTransaction transaction, SchemaCatalogEntry &schema, const Identifier &table,
-                                   const Identifier &column) {
+Identifier Binder::FreeSequenceName(CatalogTransaction transaction, SchemaCatalogEntry &schema, const Identifier &table,
+                                    const Identifier &column) {
 	auto taken = [&](const Identifier &name) {
 		for (auto type : {CatalogType::SEQUENCE_ENTRY, CatalogType::TABLE_ENTRY, CatalogType::INDEX_ENTRY}) {
 			if (schema.GetEntry(transaction, type, name)) {
@@ -738,8 +738,8 @@ static Identifier FreeSequenceName(CatalogTransaction transaction, SchemaCatalog
 	return candidate;
 }
 
-static bool DefaultNamesSequence(const ColumnDefinition &column, const QualifiedName &sequence,
-                                 const IdentifierEquality &equals) {
+bool Binder::DefaultNamesSequence(const ColumnDefinition &column, const QualifiedName &sequence,
+                                  const IdentifierEquality &equals) {
 	if (!column.HasDefaultValue() || column.DefaultValue().GetExpressionClass() != ExpressionClass::FUNCTION) {
 		return false;
 	}
@@ -773,14 +773,14 @@ static void BindSerialSequences(ClientContext &context, SchemaCatalogEntry &sche
 	for (auto &serial_column : table.serial_columns) {
 		BoundSerialSequence serial;
 		serial.column = serial_column;
-		serial.name = FreeSequenceName(transaction, schema, table.GetTableName(), serial_column);
+		serial.name = Binder::FreeSequenceName(transaction, schema, table.GetTableName(), serial_column);
 		vector<unique_ptr<ParsedExpression>> arguments;
 		arguments.push_back(ConstantExpression::String(QualifiedName(serial.name).ToString()));
 		table.columns.GetColumnMutable(serial_column)
 		    .SetDefaultValue(make_uniq<FunctionExpression>(Identifier("nextval"), std::move(arguments)));
 		auto sequence = schema.GetQualifiedName(serial.name);
 		for (auto &column : table.columns.Physical()) {
-			if (DefaultNamesSequence(column, sequence, equals)) {
+			if (Binder::DefaultNamesSequence(column, sequence, equals)) {
 				serial.dependents.push_back(column.Name());
 			}
 		}

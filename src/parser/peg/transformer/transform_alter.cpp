@@ -9,7 +9,10 @@
 #include "duckdb/parser/parsed_data/alter_scalar_function_info.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/parsed_data/alter_database_info.hpp"
+#include "duckdb/parser/parsed_data/create_sequence_info.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/parser/parsed_data/alter_schema_info.hpp"
 #include "duckdb/parser/parsed_data/alter_sequence_info.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
@@ -51,13 +54,36 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformAlterStatement(PEGTrans
 		                      column_entry.GetName().GetIdentifierName(),
 		                      add_column.GetQualifiedName().Name().GetIdentifierName());
 	}
+	unique_ptr<SQLStatement> serial_sequence;
+	if (follow_ups.serial) {
+		auto &table = add_column.GetQualifiedName();
+		if (column_entry.HasDefaultValue()) {
+			throw ParserException("multiple default values specified for column \"%s\" of table \"%s\"",
+			                      column_entry.GetName().GetIdentifierName(), table.Name().GetIdentifierName());
+		}
+		auto sequence_name = table.WithName(
+		    Identifier(table.Name().GetIdentifierName() + "_" + column_entry.GetName().GetIdentifierName() + "_seq"));
+		auto sequence = make_uniq<CreateSequenceInfo>();
+		sequence->SetQualifiedName(sequence_name);
+		sequence->max_value = Value::MaximumValue(column_entry.Type()).GetValue<int64_t>();
+		sequence->owned_by = table.Path();
+		sequence->owned_by.push_back(column_entry.GetName());
+		sequence->serial = true;
+		auto create_sequence = make_uniq<CreateStatement>();
+		create_sequence->info = std::move(sequence);
+		create_sequence->query = create_sequence->ToString();
+		serial_sequence = std::move(create_sequence);
+		vector<unique_ptr<ParsedExpression>> arguments;
+		arguments.push_back(ConstantExpression::String(sequence_name.ToString()));
+		column_entry.SetDefaultValue(make_uniq<FunctionExpression>(Identifier("nextval"), std::move(arguments)));
+	}
 	const bool materialize_default =
 	    column_entry.HasDefaultValue() && !IsSimpleDefaultValue(column_entry.DefaultValue());
 	if (!follow_ups.add_not_null && !follow_ups.add_unique && !follow_ups.add_primary_key && !materialize_default) {
 		return std::move(result);
 	}
 
-	if (add_column.if_column_not_exists) {
+	if (add_column.if_column_not_exists && !follow_ups.serial) {
 		if (follow_ups.add_not_null) {
 			throw NotImplementedException("Adding a NOT NULL column with IF NOT EXISTS is not supported");
 		}
@@ -81,7 +107,7 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformAlterStatement(PEGTrans
 		    alter_entry_data,
 		    make_uniq<AddColumnInfo>(add_column.GetAlterEntryData(), std::move(null_column),
 		                             add_column.if_column_not_exists, AddColumnConstraints()),
-		    column_name.GetIdentifierName(), column_entry.DefaultValue().Copy());
+		    column_name.GetIdentifierName(), column_entry.DefaultValue().Copy(), std::move(serial_sequence));
 	} else {
 		multi_statement = make_uniq<MultiStatement>();
 		add_column.add_column_constraints = AddColumnConstraints();
@@ -103,7 +129,7 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformAlterStatement(PEGTrans
 
 unique_ptr<AlterInfo>
 PEGTransformerFactory::TransformAlterTableStmt(PEGTransformer &transformer, const optional<bool> &if_exists,
-                                               unique_ptr<BaseTableRef> base_table_name,
+                                               const bool &has_result, unique_ptr<BaseTableRef> base_table_name,
                                                vector<unique_ptr<AlterTableInfo>> alter_table_options) {
 	if (alter_table_options.size() > 1) {
 		throw ParserException("Only one ALTER command per statement is supported");
@@ -234,29 +260,82 @@ PEGTransformerFactory::TransformRenameAlterSequenceOptions(PEGTransformer &trans
 	return make_uniq<RenameSequenceInfo>(AlterEntryData(), rename.new_table_name);
 }
 
-unique_ptr<AlterInfo>
-PEGTransformerFactory::TransformSetSequenceOption(PEGTransformer &transformer,
-                                                  vector<pair<string, unique_ptr<SequenceOption>>> sequence_option) {
+unique_ptr<AlterInfo> PEGTransformerFactory::TransformSetSequenceOption(
+    PEGTransformer &transformer, vector<pair<string, unique_ptr<SequenceOption>>> alter_sequence_option) {
 	bool has_owned = false;
 	unique_ptr<AlterInfo> owned_info;
-	for (auto &seq_option : sequence_option) {
-		if (seq_option.first == "owned") {
+	unique_ptr<AlterInfo> restart_info;
+	for (auto &seq_option : alter_sequence_option) {
+		if (seq_option.first == "restart") {
+			if (restart_info) {
+				throw ParserException("conflicting or redundant options");
+			}
+			auto restart = unique_ptr_cast<SequenceOption, ValueSequenceOption>(std::move(seq_option.second));
+			restart_info = make_uniq<RestartSequenceInfo>(
+			    AlterEntryData(), restart->value.IsNull() ? optional<int64_t>() : restart->value.GetValue<int64_t>());
+		} else if (seq_option.first == "owned") {
 			if (has_owned) {
 				throw ParserException("Owned by value should be passed at most once");
 			}
 			has_owned = true;
 			auto owned_by = unique_ptr_cast<SequenceOption, QualifiedSequenceOption>(std::move(seq_option.second));
-			auto schema = owned_by->qualified_name.Schema().empty() ? Identifier::DefaultSchema()
-			                                                        : owned_by->qualified_name.Schema();
-			owned_info =
-			    make_uniq<ChangeOwnershipInfo>(CatalogType::SEQUENCE_ENTRY, "", "", "", schema,
-			                                   owned_by->qualified_name.Name(), OnEntryNotFound::THROW_EXCEPTION);
+			auto &owner = owned_by->qualified_name;
+			auto schema =
+			    owner.Name().empty() || !owner.Schema().empty() ? owner.Schema() : Identifier::DefaultSchema();
+			auto ownership = make_uniq<ChangeOwnershipInfo>(CatalogType::SEQUENCE_ENTRY, "", "", "", schema,
+			                                                owner.Name(), OnEntryNotFound::THROW_EXCEPTION);
+			for (auto part : {&owner.Catalog(), &owner.Schema(), &owner.Name()}) {
+				if (!part->empty()) {
+					ownership->owner_path.push_back(*part);
+				}
+			}
+			owned_info = std::move(ownership);
+		} else {
+			throw NotImplementedException("ALTER SEQUENCE option not yet supported");
 		}
+	}
+	if (owned_info && restart_info) {
+		throw NotImplementedException("ALTER SEQUENCE cannot combine OWNED BY and RESTART");
 	}
 	if (owned_info) {
 		return owned_info;
 	}
-	throw NotImplementedException("ALTER SEQUENCE option not yet supported");
+	return restart_info;
+}
+
+pair<string, unique_ptr<SequenceOption>>
+PEGTransformerFactory::TransformSeqRestart(PEGTransformer &transformer,
+                                           optional<unique_ptr<ParsedExpression>> seq_restart_value) {
+	if (!seq_restart_value) {
+		return make_pair("restart", make_uniq<ValueSequenceOption>(SequenceInfo::SEQ_START, Value()));
+	}
+	auto expression = std::move(*seq_restart_value);
+	if (expression->GetExpressionClass() == ExpressionClass::FUNCTION) {
+		auto func_expr = unique_ptr_cast<ParsedExpression, FunctionExpression>(std::move(expression));
+		if (func_expr->FunctionName() != "-" || func_expr->GetArguments().size() != 1 ||
+		    func_expr->GetArguments()[0].GetExpression().GetExpressionClass() != ExpressionClass::CONSTANT) {
+			throw ParserException("Expected constant expression.");
+		}
+		auto &literal = func_expr->GetArguments()[0].GetExpression().Cast<ConstantExpression>().GetLiteral();
+		if (!literal.IsNumeric()) {
+			throw ParserException("Expected constant expression.");
+		}
+		expression = ConstantExpression::FromLiteral(literal.Negate());
+	}
+	if (expression->GetExpressionClass() != ExpressionClass::CONSTANT) {
+		throw ParserException("Expected constant expression.");
+	}
+	auto value = expression->Cast<ConstantExpression>().GetLiteral().ToValue();
+	if (value.IsNull()) {
+		throw ParserException("Expected constant expression.");
+	}
+	return make_pair("restart", make_uniq<ValueSequenceOption>(SequenceInfo::SEQ_START, std::move(value)));
+}
+
+unique_ptr<ParsedExpression> PEGTransformerFactory::TransformSeqRestartValue(PEGTransformer &transformer,
+                                                                             const bool &has_result,
+                                                                             unique_ptr<ParsedExpression> expression) {
+	return expression;
 }
 
 void PEGTransformerFactory::AddToMultiStatement(const unique_ptr<MultiStatement> &multi_statement,
@@ -289,7 +368,7 @@ void PEGTransformerFactory::AddUpdateToMultiStatement(const unique_ptr<MultiStat
 
 unique_ptr<MultiStatement> PEGTransformerFactory::TransformAndMaterializeAlter(
     AlterEntryData &data, unique_ptr<AlterInfo> info_with_null_placeholder, const string &column_name,
-    unique_ptr<ParsedExpression> expression) {
+    unique_ptr<ParsedExpression> expression, unique_ptr<SQLStatement> before_update) {
 	auto multi_statement = make_uniq<MultiStatement>();
 	/* Here we do a workaround that consists of the following statements:
 	 *	 1. `ALTER TABLE t ADD COLUMN col <type> DEFAULT NULL;`
@@ -306,6 +385,9 @@ unique_ptr<MultiStatement> PEGTransformerFactory::TransformAndMaterializeAlter(
 
 	// 1. `ALTER TABLE t ADD COLUMN col <type> DEFAULT NULL;`
 	AddToMultiStatement(multi_statement, std::move(info_with_null_placeholder));
+	if (before_update) {
+		multi_statement->statements.push_back(std::move(before_update));
+	}
 
 	// 2. `UPDATE t SET u = <expression>;`
 	AddUpdateToMultiStatement(multi_statement, column_name, data, expression);
@@ -411,6 +493,10 @@ AddColumnEntry PEGTransformerFactory::TransformAddColumnEntry(
 				new_column.type = ApplyColumnCollation(new_column.type, std::move(constraint.expression));
 			}
 		}
+	}
+	if (TransformSerialType(new_column.type)) {
+		new_column.add_column_constraints.serial = true;
+		new_column.add_column_constraints.add_not_null = true;
 	}
 	return new_column;
 }

@@ -8,6 +8,7 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/catalog/dependency_manager.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
@@ -32,6 +33,20 @@ vector<reference<TableCatalogEntry>> Binder::TruncateReferencingTables(ClientCon
 		}
 		result.push_back(Catalog::GetEntry<TableCatalogEntry>(
 		    context, QualifiedName(table.ParentCatalog().GetName(), foreign_key.info.schema, foreign_key.info.table)));
+	}
+	return result;
+}
+
+vector<QualifiedName> Binder::TruncateIdentitySequences(ClientContext &context, TableCatalogEntry &table) {
+	vector<QualifiedName> result;
+	auto &catalog = table.ParentCatalog();
+	auto dependencies = catalog.GetDependencyManager();
+	if (!dependencies) {
+		return result;
+	}
+	for (auto &owned : dependencies->OwnedEntries(catalog.GetCatalogTransaction(context), table)) {
+		auto &entry = owned.get();
+		result.emplace_back(catalog.GetName(), entry.ParentSchemaName(), entry.name);
 	}
 	return result;
 }
