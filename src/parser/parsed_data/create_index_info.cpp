@@ -53,6 +53,14 @@ vector<string> CreateIndexInfo::ExpressionsToList() const {
 		}
 		if (i < column_opclasses.size() && !column_opclasses[i].empty()) {
 			entry += " " + column_opclasses[i];
+			if (i < column_opclass_options.size() && column_opclass_options[i] && !column_opclass_options[i]->empty()) {
+				vector<string> opclass_options;
+				for (auto &option : *column_opclass_options[i]) {
+					opclass_options.push_back(StringUtil::Format("%s = %s", option.first, option.second.ToSQLString()));
+				}
+				sort(opclass_options.begin(), opclass_options.end());
+				entry += " (" + StringUtil::Join(opclass_options, ", ") + ")";
+			}
 		}
 		list.push_back(std::move(entry));
 	}
@@ -119,20 +127,21 @@ string CreateIndexInfo::ToString() const {
 	result += "(";
 	result += ExpressionsToString();
 	result += ")";
-	if (!options.empty()) {
-		result += " WITH (";
-		idx_t i = 0;
-		for (auto &opt : options) {
-			if (i > 0) {
-				result += ", ";
-			}
-			result += SQLIdentifier(opt.first);
-			if (!opt.second.IsNull()) {
-				result += " = " + opt.second.ToSQLString();
-			}
-			i++;
+	vector<string> rendered_options;
+	for (auto &opt : options) {
+		if (opt.second.type().id() == LogicalTypeId::BLOB) {
+			continue;
 		}
-		result += " )";
+		if (opt.second.IsNull()) {
+			rendered_options.push_back(StringUtil::Format("%s", SQLIdentifier(opt.first)));
+		} else {
+			rendered_options.push_back(
+			    StringUtil::Format("%s = %s", SQLIdentifier(opt.first), opt.second.ToSQLString()));
+		}
+	}
+	if (!rendered_options.empty()) {
+		sort(rendered_options.begin(), rendered_options.end());
+		result += " WITH (" + StringUtil::Join(rendered_options, ", ") + " )";
 	}
 	if (where_clause) {
 		result += " WHERE ";
