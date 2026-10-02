@@ -616,6 +616,12 @@
         "name": "tags",
         "type": "InsertionOrderPreservingMap<string>",
         "default": "InsertionOrderPreservingMap<string>()"
+      },
+      {
+        "id": 16485,
+        "name": "catalog_oid",
+        "type": "idx_t",
+        "version": "serenedb_v1"
       }
     ],
     "constructor": [
