@@ -991,6 +991,7 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 			}
 			case AlterTableType::RENAME_CONSTRAINT:
 			case AlterTableType::DROP_CONSTRAINT: {
+			case AlterTableType::SET_TRIGGER_FIRING:
 				disallow_alter = false;
 				break;
 			}
