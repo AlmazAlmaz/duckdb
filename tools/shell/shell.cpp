@@ -1010,7 +1010,8 @@ bool ShellState::TryForwardDatabaseDdl(const duckdb::SQLStatement &statement, co
 	if (!forward) {
 		return false;
 	}
-	auto query = StringUtil::Format("CALL postgres_execute(%s, %s)", SQLString(psql_dbname), SQLString(original_sql));
+	auto query = StringUtil::Format("CALL postgres_execute(%s, %s, use_transaction := false)", SQLString(psql_dbname),
+	                                SQLString(original_sql));
 	result = ExecuteSQL(query);
 	return true;
 }
