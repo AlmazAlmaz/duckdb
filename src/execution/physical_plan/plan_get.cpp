@@ -109,9 +109,10 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalGet &op) {
 	}
 
 	optional_ptr<PhysicalOperator> filter;
+	optional_ptr<PhysicalOperator> filter_projection;
 	auto &projection_ids = op.projection_ids;
 
-	if (table_filters && op.function.supports_pushdown_type) {
+	if (table_filters && (op.function.supports_pushdown_filter || op.function.supports_pushdown_type)) {
 		vector<unique_ptr<Expression>> select_list;
 		unique_ptr<Expression> unsupported_filter;
 		unordered_set<ProjectionIndex> to_remove;
@@ -125,7 +126,31 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalGet &op) {
 			auto &filter_expr = entry.Filter();
 			auto &column_idx = op.GetColumnIndex(filter_idx);
 			auto column_id = column_idx.GetPrimaryIndex();
-			if (!op.function.supports_pushdown_type(*op.bind_data, column_id)) {
+			const auto pushdown =
+			    op.function.supports_pushdown_filter
+			        ? op.function.supports_pushdown_filter(*op.bind_data, column_id, filter_expr)
+			        : (op.function.supports_pushdown_type(*op.bind_data, column_id) ? TableFilterPushdown::BeforeLimit
+			                                                                        : TableFilterPushdown::Reject);
+			if (pushdown == TableFilterPushdown::Drop) {
+				// A redundant filter (e.g. the top-k collector's own score boundary that TOP_N pushed
+				// back into the scan): remove it entirely -- neither pushed into the scan nor rehosted
+				// as a Filter node above it.
+				to_remove.insert(filter_idx);
+				continue;
+			}
+			if (pushdown == TableFilterPushdown::Reject) {
+				// column_ids is already pruned to only the columns this scan reads -- the
+				// filter column plus the query's outputs (e.g. a delete/update row-id). An
+				// empty projection_ids means "emit all of them". Declining a filter appends
+				// its column to projection_ids below; leaving it empty would make that append
+				// narrow the output to only the filter column, dropping the row-id. Emit the
+				// pruned set explicitly first so every output survives (and so the Filter node
+				// built from projection_ids below gets its output types).
+				if (projection_ids.empty()) {
+					for (idx_t i = 0; i < column_ids.size(); i++) {
+						projection_ids.push_back(ProjectionIndex(i));
+					}
+				}
 				Identifier column_name;
 				LogicalType column_type;
 				if (IsVirtualColumn(column_id)) {
@@ -169,6 +194,16 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalGet &op) {
 				}
 			}
 			filter = Make<PhysicalFilter>(filter_types, std::move(select_list), op.estimated_cardinality);
+			if (filter_types.size() > op.types.size()) {
+				vector<unique_ptr<Expression>> planned_columns;
+				planned_columns.reserve(op.types.size());
+				for (idx_t i = 0; i < op.types.size(); i++) {
+					planned_columns.push_back(make_uniq<BoundReferenceExpression>(op.types[i], i));
+				}
+				filter_projection =
+				    Make<PhysicalProjection>(op.types, std::move(planned_columns), op.estimated_cardinality);
+				filter_projection->children.push_back(*filter);
+			}
 		}
 	}
 	op.ResolveOperatorTypes();
@@ -233,7 +268,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalGet &op) {
 	cast_table_scan.dynamic_filters = op.dynamic_filters;
 	if (filter) {
 		filter->children.push_back(table_scan);
-		return *filter;
+		return filter_projection ? *filter_projection : *filter;
 	}
 	return table_scan;
 }
