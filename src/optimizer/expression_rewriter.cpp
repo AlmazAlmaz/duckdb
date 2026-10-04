@@ -19,8 +19,9 @@ struct RewriteFrame {
 
 static unique_ptr<Expression> ApplyRule(LogicalOperator &op, const vector<reference<Rule>> &rules,
                                         unique_ptr<Expression> expr, bool &changes_made, bool is_root) {
+	vector<reference<Expression>> bindings;
 	for (auto &rule : rules) {
-		vector<reference<Expression>> bindings;
+		bindings.clear();
 		if (rule.get().root->Match(*expr, bindings)) {
 			// the rule matches! try to apply it
 			bool rule_made_change = false;
