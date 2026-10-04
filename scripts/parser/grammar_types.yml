@@ -104,6 +104,8 @@ SQLStatement:
     - DropStatement
     - CreatePublicationStatement
     - CreateSubscriptionStatement
+    - DropSubscriptionStatement
+    - AlterSubscriptionStatement
     - ExecuteStatement
     - ExplainStatement
     - ExplainableStatements
@@ -2022,6 +2024,7 @@ collapsible_rules:
   - OtherOperatorExpression
   - InfixOtherOperatorExpression
   - BitwiseExpression
+  - TildeExpression
   - AdditiveExpression
   - MultiplicativeExpression
   - ExponentiationExpression
@@ -2040,6 +2043,9 @@ packrat_memoized_rules:
   - CatalogQualification
   - SchemaQualification
   - ReservedSchemaQualification
+  - SelectParens
+  - WithClause
+  - TableRef
 
 # ---------------------------------------------------------------------------
 # excluded_rules: no transformer stub generated, no semantic value extracted
@@ -2147,8 +2153,19 @@ excluded_rules:
   - PublicationFor
   - PublicationForAllTables
   - PublicationForTable
-  - SubscriptionConnection
-  - SubscriptionPublication
+  - SubscriptionWith
+  - SubscriptionOption
+  - SubscriptionOptionArg
+  - SubscriptionAlterAction
+  - SubscriptionEnableAction
+  - SubscriptionConnectionAction
+  - SubscriptionPublicationAction
+  - SubscriptionPublicationMode
+  - SubscriptionRefreshAction
+  - SubscriptionSkipAction
+  - SubscriptionRenameAction
+  - SubscriptionOwnerAction
+  - SubscriptionSetOptions
   - UsingSample
   - TableSample
   - NamedParameterAssignment

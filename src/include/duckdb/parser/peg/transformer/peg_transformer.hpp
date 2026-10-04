@@ -5,6 +5,8 @@
 #include "duckdb/parser/qualified_name_set.hpp"
 #include "duckdb/parser/peg/transformer/parse_result.hpp"
 #include "duckdb/parser/peg/transformer/transform_result.hpp"
+#include "duckdb/common/arena_containers/arena_ptr.hpp"
+#include "duckdb/common/arena_containers/arena_vector.hpp"
 #include "duckdb/parser/peg/ast/add_column_entry.hpp"
 #include "duckdb/parser/peg/ast/column_constraint_entry.hpp"
 #include "duckdb/parser/peg/ast/analyze_target.hpp"
@@ -56,6 +58,7 @@
 #include "duckdb/parser/statement/transaction_statement.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/peg/parsed_grammar.hpp"
+#include "duckdb/parser/peg/matcher.hpp"
 #include "duckdb/storage/arena_allocator.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/statement/drop_statement.hpp"
@@ -267,13 +270,14 @@ class TransformProcess;
 class GeneratedTransformProcess;
 
 using transform_process_initialize_t = void (*)(PEGTransformer &transformer, GeneratedTransformProcess &process);
-using transform_process_finalize_t = unique_ptr<TransformResultValue> (*)(PEGTransformer &transformer,
-                                                                          GeneratedTransformProcess &process);
+using transform_process_finalize_t = arena_ptr<TransformResultValue> (*)(PEGTransformer &transformer,
+                                                                         GeneratedTransformProcess &process);
 
 struct TransformFrameOps {
 	const char *name;
 	transform_process_initialize_t initialize;
 	transform_process_finalize_t finalize;
+	bool collapsible = false;
 };
 
 template <typename T>
@@ -300,24 +304,23 @@ struct TransformInput {
 	ParseResult &parse_result;
 };
 
-//! Essentially a std::variant<TransformInput, unique_ptr<TransformResultValue>>.
 //! Produced by TransformProcess::Resume to control the next execution step.
 class TransformStep {
 public:
 	static TransformStep Child(TransformInput input);
-	static TransformStep Complete(unique_ptr<TransformResultValue> result);
+	static TransformStep Complete(arena_ptr<TransformResultValue> result);
 
 	optional<TransformInput> GetChild();
-	unique_ptr<TransformResultValue> TakeResult();
+	arena_ptr<TransformResultValue> TakeResult();
 
 private:
-	TransformStep(optional<TransformInput> child_p, unique_ptr<TransformResultValue> result_p)
+	TransformStep(optional<TransformInput> child_p, arena_ptr<TransformResultValue> result_p)
 	    : child(std::move(child_p)), result(std::move(result_p)) {
 	}
 
 private:
 	optional<TransformInput> child;
-	unique_ptr<TransformResultValue> result;
+	arena_ptr<TransformResultValue> result;
 };
 
 class TransformProcess {
@@ -325,22 +328,36 @@ public:
 	virtual ~TransformProcess() = default;
 
 	//! Resume transforming, optionally with the result of the previously requested child.
-	virtual TransformStep Resume(unique_ptr<TransformResultValue> child_result) = 0;
+	virtual TransformStep Resume(arena_ptr<TransformResultValue> child_result) = 0;
 };
 
 class GeneratedTransformProcess final : public TransformProcess {
 public:
 	GeneratedTransformProcess(PEGTransformer &transformer, TransformInput input, const TransformFrameOps &info);
+	~GeneratedTransformProcess() override;
 
 	void ReserveChildSlots(idx_t count);
-	void SetChildResult(idx_t slot, unique_ptr<TransformResultValue> result);
+	void SetChildResult(idx_t slot, arena_ptr<TransformResultValue> result);
 	void PushChild(TransformInput input, idx_t slot);
-	TransformStep Resume(unique_ptr<TransformResultValue> child_result) override;
+	TransformStep Resume(arena_ptr<TransformResultValue> child_result) override;
+	bool HasPendingChild() const {
+		return pending_count > 0;
+	}
+	TransformInput PopPendingChild(idx_t &slot) {
+		auto &child = pending_children[--pending_count];
+		slot = child.slot;
+		TransformInput input(child.parse_result.get());
+		input.rule = child.rule;
+		return input;
+	}
+	arena_ptr<TransformResultValue> Finalize() {
+		return info.finalize(transformer, *this);
+	}
 
 	template <class T>
 	T TakeResult(idx_t slot) {
 		if (slot >= child_results.size() || !child_results[slot]) {
-			throw InternalException("Missing transformer result for slot %llu in rule '%s'", slot, info.name);
+			ThrowMissingResult(slot);
 		}
 		auto *result_value = TryGetTransformResult<T>(*child_results[slot]);
 		if (!result_value) {
@@ -350,53 +367,74 @@ public:
 				child_results[slot].reset();
 				return bridged_result;
 			}
-			throw InternalException("Unexpected transformer result type for slot %llu in rule '%s'", slot, info.name);
+			ThrowUnexpectedResult(slot);
 		}
 		auto result = std::move(*result_value);
-		child_results[slot].reset();
+		auto box = static_cast<TypedTransformResult<T> *>(child_results[slot].release());
+		box->TypedTransformResult<T>::~TypedTransformResult();
 		return result;
 	}
 
 	template <class T>
 	T &GetResult(idx_t slot) {
 		if (slot >= child_results.size() || !child_results[slot]) {
-			throw InternalException("Missing transformer result for slot %llu in rule '%s'", slot, info.name);
+			ThrowMissingResult(slot);
 		}
 		auto *result_value = TryGetTransformResult<T>(*child_results[slot]);
 		if (!result_value) {
-			throw InternalException("Unexpected transformer result type for slot %llu in rule '%s'", slot, info.name);
+			ThrowUnexpectedResult(slot);
 		}
 		return *result_value;
 	}
 
+	struct ChildResultSlots {
+		arena_ptr<TransformResultValue> &operator[](idx_t index) {
+			return slots[index];
+		}
+		idx_t size() const {
+			return count;
+		}
+
+		arena_ptr<TransformResultValue> *slots = nullptr;
+		idx_t count = 0;
+	};
+
 	ParseResult &parse_result;
 	const TransformFrameOps &info;
 	idx_t manual_state = 0;
-	vector<unique_ptr<TransformResultValue>> child_results;
+	ChildResultSlots child_results;
+
+private:
+	[[noreturn]] DUCKDB_API void ThrowMissingResult(idx_t slot) const;
+	[[noreturn]] DUCKDB_API void ThrowUnexpectedResult(idx_t slot) const;
+	DUCKDB_API void ResizeChildSlots(idx_t count);
 
 private:
 	struct PendingChild {
-		TransformInput input;
+		optional_ptr<const CompiledGrammarRule> rule;
 		idx_t slot;
+		reference<ParseResult> parse_result;
 	};
 
 	TransformStep NextStep();
 
 private:
 	PEGTransformer &transformer;
-	vector<PendingChild> pending_children;
+	PendingChild *pending_children = nullptr;
+	idx_t pending_count = 0;
+	idx_t pending_capacity = 0;
 	optional_idx child_result_slot;
 	bool completed = false;
 };
 
 using transform_finalize_function_t =
-    std::function<unique_ptr<TransformResultValue>(PEGTransformer &transformer, ParseResult &parse_result)>;
+    std::function<arena_ptr<TransformResultValue>(PEGTransformer &transformer, ParseResult &parse_result)>;
 
 class FinalizeTransformProcess final : public TransformProcess {
 public:
 	FinalizeTransformProcess(PEGTransformer &transformer, ParseResult &parse_result,
 	                         transform_finalize_function_t finalize);
-	TransformStep Resume(unique_ptr<TransformResultValue> child_result) override;
+	TransformStep Resume(arena_ptr<TransformResultValue> child_result) override;
 
 private:
 	PEGTransformer &transformer;
@@ -410,28 +448,22 @@ struct TransformStackFrame {
 
 	optional_ptr<const CompiledGrammarRule> rule;
 	ParseResult &parse_result;
-	unique_ptr<TransformProcess> process;
-	unique_ptr<TransformResultValue> child_result;
+	arena_ptr<TransformProcess> process;
+	arena_ptr<TransformResultValue> child_result;
 	idx_t height = 0;
 };
-
-#ifdef DEBUG
-using frame_stack_t = InspectableStack<TransformStackFrame>;
-#else
-using frame_stack_t = stack<TransformStackFrame>;
-#endif
 
 class TransformStack {
 public:
 	explicit TransformStack(PEGTransformer &transformer);
-	unique_ptr<TransformResultValue> Execute(TransformInput input);
+	arena_ptr<TransformResultValue> Execute(TransformInput input);
 
 	template <class T>
 	T Execute(TransformInput input) {
 		auto base_result = Execute(input);
 		auto *result_value = TryGetTransformResult<T>(*base_result);
 		if (!result_value) {
-			throw InternalException("Unexpected transformer result type for root rule '%s'", input.parse_result.name);
+			throw InternalException("Unexpected transformer result type for root rule '%s'", input.parse_result.Name());
 		}
 		return std::move(*result_value);
 	}
@@ -445,13 +477,25 @@ public:
 #endif
 
 private:
+	static constexpr idx_t INITIAL_FRAME_CAPACITY = 32;
+	static constexpr idx_t MAX_RECURSION_DEPTH = 1024;
+
+	arena_ptr<TransformResultValue> ExecuteRecursive(TransformInput input, idx_t depth, idx_t &result_height);
+	template <class PROCESS>
+	arena_ptr<TransformResultValue> RunProcess(PROCESS &process, TransformStackFrame &frame, idx_t depth);
+	arena_ptr<TransformResultValue> RunProcess(GeneratedTransformProcess &process, TransformStackFrame &frame,
+	                                           idx_t depth);
+	arena_ptr<TransformResultValue> FinishFrame(TransformStackFrame &frame, arena_ptr<TransformResultValue> result,
+	                                            idx_t &result_height);
+	arena_ptr<TransformResultValue> ExecuteFrames(TransformInput input, idx_t &result_height);
 	void PushFrame(TransformInput input);
 	void InitializeFrame(TransformStackFrame &frame);
-	unique_ptr<TransformResultValue> ExecuteFrame(TransformStackFrame &frame);
+	arena_ptr<TransformResultValue> ExecuteFrame(TransformStackFrame &frame);
 
 private:
 	PEGTransformer &transformer;
-	frame_stack_t frames;
+	std::span<const std::pair<std::string_view, const TransformFrameOps *>> generated_ops;
+	vector<TransformStackFrame> frames;
 	idx_t height = 0;
 };
 
@@ -481,7 +525,7 @@ public:
 				SetResultLocation(bridged_result, parse_result.GetLocation());
 				return bridged_result;
 			}
-			throw InternalException("Transformer for rule '" + parse_result.name + "' returned an unexpected type.");
+			throw InternalException("Transformer for rule '%s' returned an unexpected type.", parse_result.Name());
 		}
 
 		auto result = std::move(*result_value);
@@ -516,6 +560,16 @@ public:
 		return allocator.Make<T>(std::forward<Args>(args)...);
 	}
 
+	template <class T>
+	arena_ptr<TransformResultValue> MakeResult(T value) {
+		return arena_ptr<TransformResultValue>(allocator.Make<TypedTransformResult<T>>(std::move(value)));
+	}
+
+	template <class PROCESS, typename... Args>
+	arena_ptr<TransformProcess> MakeProcess(Args &&...args) {
+		return arena_ptr<TransformProcess>(allocator.Make<PROCESS>(std::forward<Args>(args)...));
+	}
+
 	void Clear();
 	void ClearParameters();
 	static void ParamTypeCheck(PreparedParamType last_type, PreparedParamType new_type);
@@ -534,7 +588,7 @@ public:
 	void SetQueryLocation(TableRef &ref, QueryLocation query_location);
 
 private:
-	unique_ptr<TransformResultValue> TransformInternal(ParseResult &parse_result);
+	arena_ptr<TransformResultValue> TransformInternal(ParseResult &parse_result);
 	void SetResultLocation(ParseResult &parse_result, TransformResultValue &result);
 
 	template <typename T>
@@ -606,6 +660,26 @@ private:
 	friend class TransformStack;
 };
 
+inline void GeneratedTransformProcess::ReserveChildSlots(idx_t count) {
+	if (count == child_results.count && count <= pending_capacity) {
+		return;
+	}
+	if (child_results.count != 0 || pending_count != 0) {
+		ResizeChildSlots(count);
+		return;
+	}
+	auto data =
+	    transformer.allocator.AllocateAligned(count * (sizeof(arena_ptr<TransformResultValue>) + sizeof(PendingChild)));
+	auto slots = reinterpret_cast<arena_ptr<TransformResultValue> *>(data);
+	for (idx_t i = 0; i < count; i++) {
+		new (slots + i) arena_ptr<TransformResultValue>();
+	}
+	child_results.slots = slots;
+	child_results.count = count;
+	pending_children = reinterpret_cast<PendingChild *>(data + count * sizeof(arena_ptr<TransformResultValue>));
+	pending_capacity = count;
+}
+
 template <typename T>
 inline unique_ptr<TypedTransformResult<T>> TryBridgeTransformResultValue(TransformResultValue &base_result) {
 	return nullptr;
@@ -657,11 +731,13 @@ public:
 	//! Throws on syntax error. `token_cursor` is in/out: it's the token index where matching
 	//! starts, and on return holds the token index immediately past the last consumed token.
 	static unique_ptr<SQLStatement> TransformTopLevelStatement(TokenIterator &token_iterator, ParserOptions &options,
-	                                                           const CompiledGrammar &grammar, idx_t &height);
+	                                                           const CompiledGrammar &grammar,
+	                                                           ParseResultAllocator &parse_result_allocator,
+	                                                           idx_t &height);
 	static ParseResult &ExtractResultFromParens(ParseResult &parse_result);
 	static vector<reference<ParseResult>> ExtractParseResultsFromList(ParseResult &parse_result);
 	static bool ExpressionIsEmptyStar(const ParsedExpression &expr);
-	static QualifiedName StringToQualifiedName(vector<string> input);
+	static QualifiedName StringToQualifiedName(std::span<const string> input);
 	static QualifiedColumnName StringToQualifiedColumnName(const vector<string> &input);
 	static LogicalType GetIntervalTargetType(DatePartSpecifier date_part);
 	static LogicalType ApplyColumnCollation(const optional<LogicalType> &type, unique_ptr<ParsedExpression> collation);
@@ -703,36 +779,36 @@ public:
 	static bool TransformSerialType(LogicalType &type);
 
 	static void InitializePivotStatementTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static unique_ptr<TransformResultValue> FinalizePivotStatementTrampoline(PEGTransformer &transformer,
-	                                                                         GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizePivotStatementTrampoline(PEGTransformer &transformer,
+	                                                                        GeneratedTransformProcess &process);
 	static void InitializeUnpivotStatementTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static unique_ptr<TransformResultValue> FinalizeUnpivotStatementTrampoline(PEGTransformer &transformer,
-	                                                                           GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeUnpivotStatementTrampoline(PEGTransformer &transformer,
+	                                                                          GeneratedTransformProcess &process);
 	static void InitializeLiteralExpressionTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static unique_ptr<TransformResultValue> FinalizeLiteralExpressionTrampoline(PEGTransformer &transformer,
-	                                                                            GeneratedTransformProcess &process);
-	static void InitializePrefixExpressionTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static unique_ptr<TransformResultValue> FinalizePrefixExpressionTrampoline(PEGTransformer &transformer,
+	static arena_ptr<TransformResultValue> FinalizeLiteralExpressionTrampoline(PEGTransformer &transformer,
 	                                                                           GeneratedTransformProcess &process);
+	static void InitializePrefixExpressionTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizePrefixExpressionTrampoline(PEGTransformer &transformer,
+	                                                                          GeneratedTransformProcess &process);
 	static void InitializeOverClauseTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static unique_ptr<TransformResultValue> FinalizeOverClauseTrampoline(PEGTransformer &transformer,
-	                                                                     GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeOverClauseTrampoline(PEGTransformer &transformer,
+	                                                                    GeneratedTransformProcess &process);
 	static void InitializeSelectStatementInternalTrampoline(PEGTransformer &transformer,
 	                                                        GeneratedTransformProcess &process);
-	static unique_ptr<TransformResultValue>
+	static arena_ptr<TransformResultValue>
 	FinalizeSelectStatementInternalTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static void InitializeSimpleSelectTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static unique_ptr<TransformResultValue> FinalizeSimpleSelectTrampoline(PEGTransformer &transformer,
-	                                                                       GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeSimpleSelectTrampoline(PEGTransformer &transformer,
+	                                                                      GeneratedTransformProcess &process);
 	static void InitializeTableRefTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static unique_ptr<TransformResultValue> FinalizeTableRefTrampoline(PEGTransformer &transformer,
-	                                                                   GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeTableRefTrampoline(PEGTransformer &transformer,
+	                                                                  GeneratedTransformProcess &process);
 	static void InitializeWithClauseTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static unique_ptr<TransformResultValue> FinalizeWithClauseTrampoline(PEGTransformer &transformer,
-	                                                                     GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeWithClauseTrampoline(PEGTransformer &transformer,
+	                                                                    GeneratedTransformProcess &process);
 	static void InitializeWindowDefinitionTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static unique_ptr<TransformResultValue> FinalizeWindowDefinitionTrampoline(PEGTransformer &transformer,
-	                                                                           GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeWindowDefinitionTrampoline(PEGTransformer &transformer,
+	                                                                          GeneratedTransformProcess &process);
 
 	//===--------------------------------------------------------------------===//
 	// START GENERATED TRAMPOLINE RULES

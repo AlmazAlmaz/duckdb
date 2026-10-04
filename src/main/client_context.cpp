@@ -411,7 +411,7 @@ bool ClientContext::ErrorInvalidatesTransaction(ExceptionType type) {
 	}
 }
 
-StatementIterator ClientContext::IterateStatements(const string &query, bool wrap_multi) {
+StatementIterator ClientContext::IterateStatements(std::string_view query, bool wrap_multi) {
 	// The iterator yields ready-to-execute (engine-facing) statements: PRAGMA reparse,
 	// MULTI_STATEMENT unpack and transaction wrapping per peel — matches the eager API users expect.
 	// Callers that want raw parse-facing statements and drive their own preprocessing construct a
@@ -434,7 +434,8 @@ void ClientContext::PreprocessStatements(vector<unique_ptr<SQLStatement>> &buffe
 	preprocessor.Preprocess(*lock, buffer, transaction_state, wrap_multi);
 }
 
-vector<unique_ptr<SQLStatement>> ClientContext::ParseStatementsInternal(ClientContextLock &lock, const string &query) {
+vector<unique_ptr<SQLStatement>> ClientContext::ParseStatementsInternal(ClientContextLock &lock,
+                                                                        std::string_view query) {
 	try {
 		QueryProfiler::Get(*this).StartQuery(query);
 
@@ -456,7 +457,7 @@ vector<unique_ptr<SQLStatement>> ClientContext::ParseStatementsInternal(ClientCo
 	}
 }
 
-unique_ptr<LogicalOperator> ClientContext::ExtractPlan(const string &query) {
+unique_ptr<LogicalOperator> ClientContext::ExtractPlan(std::string_view query) {
 	auto lock = LockContext();
 
 	auto statements = ParseStatementsInternal(*lock, query);
@@ -622,7 +623,7 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 }
 
 unique_ptr<PreparedStatement>
-ClientContext::Prepare(const string &query,
+ClientContext::Prepare(std::string_view query,
                        optional_ptr<const case_insensitive_map_t<LogicalType>> parameter_type_hints) {
 	auto lock = LockContext();
 	// prepare the query
@@ -799,7 +800,7 @@ unique_ptr<QueryResult> ClientContext::Query(unique_ptr<SQLStatement> statement,
 	return CompleteInternal(*lock, std::move(result));
 }
 
-unique_ptr<QueryResult> ClientContext::Query(const string &query, QueryParameters query_parameters) {
+unique_ptr<QueryResult> ClientContext::Query(std::string_view query, QueryParameters query_parameters) {
 	auto lock = LockContext();
 	// The lazy path bypasses ParseStatementsInternal → InitialCleanup, so clear leftover query state
 	// (interrupt flag, etc.) ourselves.
@@ -903,7 +904,7 @@ unique_ptr<QueryResult> ClientContext::Query(const string &query, QueryParameter
 	return result;
 }
 
-unique_ptr<QueryResult> ClientContext::Query(const string &query, shared_ptr<ResultFormat> format) {
+unique_ptr<QueryResult> ClientContext::Query(std::string_view query, shared_ptr<ResultFormat> format) {
 	return Query(query, QueryParameters(std::move(format)));
 }
 
@@ -911,7 +912,7 @@ unique_ptr<QueryResult> ClientContext::Query(unique_ptr<SQLStatement> statement,
 	return Query(std::move(statement), QueryParameters(std::move(format)));
 }
 
-unique_ptr<QueryResult> ClientContext::Submit(const string &query, const QueryParameters &parameters) {
+unique_ptr<QueryResult> ClientContext::Submit(std::string_view query, const QueryParameters &parameters) {
 	auto lock = LockContext();
 	try {
 		InitialCleanup(*lock);
@@ -943,7 +944,7 @@ unique_ptr<QueryResult> ClientContext::Submit(unique_ptr<SQLStatement> statement
 	}
 }
 
-unique_ptr<QueryResult> ClientContext::Submit(const string &query, shared_ptr<ResultFormat> format) {
+unique_ptr<QueryResult> ClientContext::Submit(std::string_view query, shared_ptr<ResultFormat> format) {
 	return Submit(query, QueryParameters(std::move(format)));
 }
 
@@ -951,7 +952,7 @@ unique_ptr<QueryResult> ClientContext::Submit(unique_ptr<SQLStatement> statement
 	return Submit(std::move(statement), QueryParameters(std::move(format)));
 }
 
-unique_ptr<QueryResult> ClientContext::Submit(const string &query, identifier_map_t<BoundParameterData> &values,
+unique_ptr<QueryResult> ClientContext::Submit(std::string_view query, identifier_map_t<BoundParameterData> &values,
                                               QueryParameters parameters) {
 	parameters.statement_args = values;
 	return Submit(query, parameters);
@@ -1291,7 +1292,7 @@ void ClientContext::TryBindRelation(Relation &relation, vector<ColumnDefinition>
 	RunFunctionInTransaction([&]() { InternalTryBindRelation(relation, result_columns); });
 }
 
-unordered_set<string> ClientContext::GetTableNames(const string &query, const bool qualified) {
+unordered_set<string> ClientContext::GetTableNames(std::string_view query, const bool qualified) {
 	auto lock = LockContext();
 
 	// Preprocess before binding so PRAGMA reparse / macro expansion happens up front — GetTableNames

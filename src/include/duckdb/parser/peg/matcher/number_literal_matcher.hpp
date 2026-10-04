@@ -22,16 +22,12 @@ public:
 		}
 		auto &token_text = token->text;
 		auto start_offset = optional_idx(token->offset);
-		auto token_length = optional_idx(token->length);
+		auto token_length = optional_idx(token->text.size());
 		if (!MatchNumberLiteral(state)) {
 			return MatcherResult::Failure();
 		}
-		state.token_iterator.SetPreviousTokenType(TokenType::NUMBER_LITERAL);
-		auto result = state.AllocateParseResult<NumberParseResult>(token_text, start_offset, token_length);
-		if (result.HasParseResult()) {
-			result.GetParseResult()->name = name;
-		}
-		return result;
+		state.AnnotatePreviousToken(TokenType::NUMBER_LITERAL);
+		return state.AllocateParseResult<NumberParseResult>(token_text, start_offset, token_length);
 	}
 
 	SuggestionType AddSuggestionInternal(MatchState &state) const override {
@@ -40,6 +36,10 @@ public:
 
 	string ToString() const override {
 		return "NUMBER_LITERAL";
+	}
+
+	uint8_t FirstTokenClasses() const override {
+		return MatcherTokenClass::NUMBER;
 	}
 
 private:

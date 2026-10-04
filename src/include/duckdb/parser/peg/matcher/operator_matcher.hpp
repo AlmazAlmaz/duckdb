@@ -24,7 +24,7 @@ public:
 		}
 		auto &token_text = token->text;
 		auto start_offset = optional_idx(token->offset);
-		auto token_length = optional_idx(token->length);
+		auto token_length = optional_idx(token->text.size());
 		if (!MatchOperator(state)) {
 			return MatcherResult::Failure();
 		}
@@ -37,6 +37,10 @@ public:
 
 	string ToString() const override {
 		return "OPERATOR";
+	}
+
+	uint8_t FirstTokenClasses() const override {
+		return MatcherTokenClass::OPERATOR;
 	}
 
 private:
@@ -60,7 +64,7 @@ private:
 	}
 
 private:
-	static bool HasSpecialPrecedence(const string &operator_name);
+	static bool HasSpecialPrecedence(std::string_view operator_name);
 
 	OperatorMatcherMode mode;
 };

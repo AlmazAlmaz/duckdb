@@ -29,21 +29,15 @@ public:
 		}
 		auto &token_text = token->text;
 		auto start_offset = optional_idx(token->offset);
-		auto token_length = optional_idx(token->length);
+		auto token_length = optional_idx(token->text.size());
 		if (!MatchKeyword(state)) {
 			return MatcherResult::Failure();
 		}
 		if (!state.BuildParseResult()) {
 			return MatcherResult::Success();
 		}
-		string keyword_text = token_text;
-		state.FoldIdentifier(keyword_text);
-		auto result =
-		    state.AllocateParseResult<KeywordParseResult>(std::move(keyword_text), start_offset, token_length);
-		if (result.HasParseResult()) {
-			result.GetParseResult()->name = name;
-		}
-		return result;
+		return state.AllocateParseResult<KeywordParseResult>(state.FoldIdentifier(token_text), start_offset,
+		                                                     token_length);
 	}
 
 	SuggestionType AddSuggestionInternal(MatchState &state) const override {
@@ -61,6 +55,13 @@ public:
 	//! Custom matchers must not be filtered using ordinary literal semantics by default.
 	virtual optional_idx GetDispatchLiteral(const GrammarLiteralTable &) const {
 		return optional_idx();
+	}
+
+	optional_idx GetLiteralId() const {
+		if (!literal_table) {
+			return optional_idx();
+		}
+		return optional_idx(literal_info.LiteralId());
 	}
 
 private:

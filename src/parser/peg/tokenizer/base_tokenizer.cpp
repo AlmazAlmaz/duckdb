@@ -1,30 +1,57 @@
+#include "duckdb/common/array.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/peg/tokenizer/tokenizer.hpp"
 #include "duckdb/parser/peg/keyword_helper.hpp"
+#include "duckdb/parser/peg/matcher/string_literal_matcher.hpp"
+#include "duckdb/parser/peg/special_string_utils.hpp"
 
 namespace duckdb {
 
-TokenizerBehavior::TokenizerBehavior(const string &sql, vector<MatcherToken> &tokens) : sql(sql), tokens(tokens) {
+uint8_t MatcherToken::ComputeClasses() const {
+	uint8_t result = 0;
+	bool operator_text = true;
+	for (auto c : text) {
+		if (c != '#' && !Tokenizer::CharacterIsOperator(c)) {
+			operator_text = false;
+			break;
+		}
+	}
+	if (operator_text) {
+		result |= MatcherTokenClass::OPERATOR;
+	}
+	if (text.empty()) {
+		return result;
+	}
+	auto initial_number = Tokenizer::CharacterIsInitialNumber(text.front());
+	if (initial_number && text != ".") {
+		result |= MatcherTokenClass::NUMBER;
+	}
+	if ((text.front() == '"' && text.back() == '"') ||
+	    (!initial_number && Tokenizer::CharacterIsKeyword(text.front()))) {
+		result |= MatcherTokenClass::WORD;
+	}
+	if (text.front() == '\'' && text.back() == '\'') {
+		result |= MatcherTokenClass::SINGLE_QUOTED;
+	}
+	if (StringLiteralMatcher::IsStringLiteral(*this, GetSpecialStringInfo(text))) {
+		result |= MatcherTokenClass::STRING;
+	}
+	return result;
 }
 
-Tokenizer::Tokenizer(const PEGKeywordHelper &keyword_helper_p) : keyword_helper(keyword_helper_p) {
+TokenizerBehavior::TokenizerBehavior(std::string_view sql, vector<MatcherToken> &tokens) : sql(sql), tokens(tokens) {
 }
 
-bool Tokenizer::BackslashEscapesStringLiterals() const {
-	return false;
+Tokenizer::Tokenizer(const PEGKeywordHelper &keyword_helper_p)
+    : keyword_helper(keyword_helper_p), literal_table(keyword_helper_p.GetLiteralTable()) {
 }
 
-bool Tokenizer::IsQuotedIdentifierDelimiter(char character) const {
-	return character == '"';
-}
-
-void Tokenizer::HandleLastToken(TokenizerBehavior &behavior, TokenizeState state, const string &sql,
+void Tokenizer::HandleLastToken(TokenizerBehavior &behavior, TokenizeState state, std::string_view sql,
                                 idx_t last_pos) const {
-	string last_word = sql.substr(last_pos, sql.size() - last_pos);
-	behavior.OnLastToken(*this, state, last_word, last_pos);
+	behavior.OnLastToken(*this, state, sql.substr(last_pos), last_pos);
 }
 
-bool Tokenizer::IsCompoundColonToken(const string &sql, idx_t pos, idx_t &token_length) const {
+bool Tokenizer::IsCompoundColonToken(std::string_view sql, idx_t pos, idx_t &token_length) const {
 	if (pos + 1 >= sql.size() || sql[pos] != ':') {
 		return false;
 	}
@@ -35,8 +62,8 @@ bool Tokenizer::IsCompoundColonToken(const string &sql, idx_t pos, idx_t &token_
 	return true;
 }
 
-bool Tokenizer::IsHashOperatorToken(const string &sql, idx_t pos, idx_t &token_length) {
-	const auto rest = std::string_view(sql).substr(pos);
+bool Tokenizer::IsHashOperatorToken(std::string_view sql, idx_t pos, idx_t &token_length) {
+	const auto rest = sql.substr(pos);
 	switch (rest[0]) {
 	case '<':
 		if (rest.starts_with("<#>")) {
@@ -54,122 +81,6 @@ bool Tokenizer::IsHashOperatorToken(const string &sql, idx_t pos, idx_t &token_l
 			return true;
 		}
 		return false;
-	default:
-		return false;
-	}
-}
-
-bool Tokenizer::IsSingleByteOperator(char c) {
-	switch (c) {
-	case '(':
-	case ')':
-	case '{':
-	case '}':
-	case '[':
-	case ']':
-	case ',':
-	case ':':
-	case '?':
-	case '$':
-	case '#':
-		return true;
-	default:
-		return false;
-	}
-}
-
-bool Tokenizer::CharacterIsInitialNumber(char c) {
-	if (c >= '0' && c <= '9') {
-		return true;
-	}
-	return c == '.';
-}
-
-bool Tokenizer::CharacterIsSpecialStringCharacter(char c) {
-	if (c == 'N' || c == 'n') {
-		return true;
-	}
-	if (c == 'X' || c == 'x') {
-		return true;
-	}
-	if (c == 'E' || c == 'e') {
-		return true;
-	}
-	if (c == 'B' || c == 'b') {
-		return true;
-	}
-	return false;
-}
-
-bool Tokenizer::CharacterIsNumber(char c) {
-	if (CharacterIsInitialNumber(c)) {
-		return true;
-	}
-	switch (c) {
-	case 'e': // exponents
-	case 'E':
-	case '_':
-		return true;
-	default:
-		return false;
-	}
-}
-
-bool Tokenizer::CharacterIsScientific(char c) {
-	switch (c) {
-	case 'e':
-	case 'E':
-		return true;
-	default:
-		return false;
-	}
-}
-
-bool Tokenizer::CharacterIsControlFlow(char c) {
-	switch (c) {
-	case '\'':
-	case ';':
-	case '"':
-	case '.':
-		return true;
-	default:
-		return false;
-	}
-}
-
-bool Tokenizer::CharacterIsKeyword(char c) {
-	if (IsSingleByteOperator(c)) {
-		return false;
-	}
-	if (StringUtil::CharacterIsOperator(c)) {
-		return false;
-	}
-	if (StringUtil::CharacterIsSpace(c)) {
-		return false;
-	}
-	if (CharacterIsControlFlow(c)) {
-		return false;
-	}
-	return true;
-}
-
-bool Tokenizer::CharacterIsOperator(char c) {
-	switch (c) {
-	case '+':
-	case '-':
-	case '*':
-	case '/':
-	case '%':
-	case '^':
-	case '<':
-	case '>':
-	case '=':
-	case '~':
-	case '!':
-	case '@':
-	case '&':
-	case '|':
-		return true;
 	default:
 		return false;
 	}
@@ -211,13 +122,12 @@ void TokenizerBehavior::PushToken(idx_t start, idx_t end, TokenType type, bool u
 	if (start >= end) {
 		return;
 	}
-	string last_token = sql.substr(start, end - start);
-	tokens.emplace_back(std::move(last_token), start, type, unterminated);
+	tokens.emplace_back(sql.substr(start, end - start), start, type, unterminated);
 	if (tokens.size() < 2) {
 		return;
 	}
 	auto &previous_token = tokens[tokens.size() - 2];
-	auto previous_token_end = previous_token.offset + previous_token.length;
+	auto previous_token_end = previous_token.offset + previous_token.text.size();
 	if (has_block_comment && last_block_comment_position >= previous_token_end && last_block_comment_position < start) {
 		tokens.back().preceded_by_block_comment = true;
 	}
@@ -301,24 +211,40 @@ void Tokenizer::PushOperatorToken(TokenizerBehavior &behavior, idx_t start, idx_
 	behavior.PushToken(start, end_pos, TokenType::OPERATOR);
 	// Push any trimmed '+' or '-' characters as individual tokens
 	for (idx_t pos = end_pos; pos < end; pos++) {
-		tokens.emplace_back(string(1, sql[pos]), pos, TokenType::OPERATOR);
+		tokens.emplace_back(sql.substr(pos, 1), pos, TokenType::OPERATOR);
 	}
 }
 
+static const array<bool, 256> &KeywordCharacters() {
+	static const auto table = [] {
+		array<bool, 256> result {};
+		for (idx_t c = 0; c < result.size(); c++) {
+			result[c] = Tokenizer::CharacterIsKeyword(static_cast<char>(c));
+		}
+		return result;
+	}();
+	return table;
+}
+
 bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
+	auto &keyword_characters = KeywordCharacters();
 	auto &sql = behavior.sql;
 	auto &tokens = behavior.tokens;
 	auto state = TokenizeState::STANDARD;
 	idx_t last_pos = 0;
 	bool escape_string = false;
 	char quoted_identifier_delimiter = '"';
-	string dollar_quote_marker;
+	std::string_view dollar_quote_marker;
 	idx_t dollar_marker_start = 0;
 	idx_t multi_line_comment_depth = 0;
 	for (idx_t i = 0; i < sql.size(); i++) {
 		auto c = sql[i];
 		switch (state) {
 		case TokenizeState::STANDARD:
+			if (StringUtil::CharacterIsSpace(c)) {
+				last_pos = i + 1;
+				break;
+			}
 			if (c == '\'') {
 				state = TokenizeState::STRING_LITERAL;
 				last_pos = i;
@@ -345,7 +271,7 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 				}
 				if (sql[i + 1] >= '0' && sql[i + 1] <= '9') {
 					// $[numeric] is a parameter, not a dollar-quoted string
-					tokens.emplace_back(string(1, c), i, TokenType::OPERATOR);
+					tokens.emplace_back(sql.substr(i, 1), i, TokenType::OPERATOR);
 					break;
 				}
 				// Dollar-quoted string or collabel parameter ($collabel)
@@ -363,7 +289,7 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 				}
 				if (next_dollar == 0) {
 					// Collabel parameter ($collabel)
-					tokens.emplace_back(string(1, c), i, TokenType::OPERATOR);
+					tokens.emplace_back(sql.substr(i, 1), i, TokenType::OPERATOR);
 					break;
 				}
 				state = TokenizeState::DOLLAR_QUOTED_STRING;
@@ -387,11 +313,6 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 				multi_line_comment_depth = 1;
 				break;
 			}
-			if (StringUtil::CharacterIsSpace(c)) {
-				// space character - skip
-				last_pos = i + 1;
-				break;
-			}
 			idx_t token_length;
 			if (IsCompoundColonToken(sql, i, token_length)) {
 				if (i + token_length < sql.size() && CharacterIsOperator(sql[i + token_length])) {
@@ -413,7 +334,7 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 			}
 			if (IsSingleByteOperator(c)) {
 				// single-byte operator - directly push the token
-				tokens.emplace_back(string(1, c), last_pos, TokenType::OPERATOR);
+				tokens.emplace_back(sql.substr(i, 1), last_pos, TokenType::OPERATOR);
 				last_pos = i + 1;
 				break;
 			}
@@ -574,15 +495,29 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 		case TokenizeState::KEYWORD:
 			// keyword - check if this is still a keyword
 			// '$' is valid as a non-initial identifier character in PostgreSQL
-			if (c != '$' && !CharacterIsKeyword(c)) {
-				// not a keyword - return to standard state
-				auto word = sql.substr(last_pos, i - last_pos);
-				auto token_type = keyword_helper.IsKeyword(word) ? TokenType::KEYWORD : TokenType::IDENTIFIER;
-				behavior.PushToken(last_pos, i, token_type);
-				state = TokenizeState::STANDARD;
-				last_pos = i;
-				i--;
+			while (c == '$' || keyword_characters[static_cast<uint8_t>(c)]) {
+				if (++i == sql.size()) {
+					break;
+				}
+				c = sql[i];
 			}
+			if (i == sql.size()) {
+				i--;
+				break;
+			}
+			// not a keyword - return to standard state
+			{
+				auto word = sql.substr(last_pos, i - last_pos);
+				auto literal_info = literal_table.Lookup(word);
+				auto token_count = behavior.tokens.size();
+				behavior.PushToken(last_pos, i, literal_info.IsKeyword() ? TokenType::KEYWORD : TokenType::IDENTIFIER);
+				if (behavior.tokens.size() > token_count) {
+					behavior.tokens.back().SetLiteralInfo(literal_table, literal_info);
+				}
+			}
+			state = TokenizeState::STANDARD;
+			last_pos = i;
+			i--;
 			break;
 		case TokenizeState::STRING_LITERAL:
 			if ((escape_string || BackslashEscapesStringLiterals()) && c == '\\' && i + 1 < sql.size()) {
@@ -663,7 +598,7 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 			}
 			// Marker found! Revert to standard state
 			behavior.PushToken(last_pos, end + 1, TokenType::STRING_LITERAL);
-			dollar_quote_marker = string();
+			dollar_quote_marker = {};
 			state = TokenizeState::STANDARD;
 			i = end;
 			last_pos = i + 1;
@@ -698,16 +633,22 @@ void TokenizerBehavior::OnStatementEnd(idx_t pos) {
 	// Default: Do nothing
 }
 
-void TokenizerBehavior::OnLastToken(const Tokenizer &tokenizer, TokenizeState state, string last_word, idx_t last_pos) {
+void TokenizerBehavior::OnLastToken(const Tokenizer &tokenizer, TokenizeState state, std::string_view last_word,
+                                    idx_t last_pos) {
 	if (last_word.empty()) {
 		return;
 	}
-	if (state == TokenizeState::KEYWORD && !tokenizer.keyword_helper.IsKeyword(last_word)) {
-		state = TokenizeState::STANDARD;
+	if (state == TokenizeState::KEYWORD) {
+		auto &literal_table = tokenizer.literal_table;
+		auto literal_info = literal_table.Lookup(last_word);
+		auto type = literal_info.IsKeyword() ? TokenType::KEYWORD : TokenType::IDENTIFIER;
+		tokens.emplace_back(last_word, last_pos, type);
+		tokens.back().SetLiteralInfo(literal_table, literal_info);
+		return;
 	}
 
 	bool is_unterminated = Tokenizer::IsUnterminatedState(state);
-	tokens.emplace_back(std::move(last_word), last_pos, Tokenizer::TokenizeStateToType(state), is_unterminated);
+	tokens.emplace_back(last_word, last_pos, Tokenizer::TokenizeStateToType(state), is_unterminated);
 }
 
 } // namespace duckdb

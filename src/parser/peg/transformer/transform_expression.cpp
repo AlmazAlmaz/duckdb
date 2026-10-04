@@ -1884,7 +1884,7 @@ void PEGTransformerFactory::InitializePrefixExpressionTrampoline(PEGTransformer 
 	process.PushChild({list_pr.GetChild(1)}, 0);
 }
 
-unique_ptr<TransformResultValue>
+arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizePrefixExpressionTrampoline(PEGTransformer &transformer,
                                                           GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
@@ -1892,7 +1892,7 @@ PEGTransformerFactory::FinalizePrefixExpressionTrampoline(PEGTransformer &transf
 	auto expr = process.TakeResult<unique_ptr<ParsedExpression>>(0);
 
 	if (!prefix_opt.HasResult()) {
-		return make_uniq<TypedTransformResult<unique_ptr<ParsedExpression>>>(std::move(expr));
+		return transformer.MakeResult<unique_ptr<ParsedExpression>>(std::move(expr));
 	}
 
 	auto &prefix_repeat = prefix_opt.GetResult().Cast<RepeatParseResult>();
@@ -1926,7 +1926,7 @@ PEGTransformerFactory::FinalizePrefixExpressionTrampoline(PEGTransformer &transf
 		func_expr->IsOperatorMutable() = true;
 		expr = std::move(func_expr);
 	}
-	return make_uniq<TypedTransformResult<unique_ptr<ParsedExpression>>>(std::move(expr));
+	return transformer.MakeResult<unique_ptr<ParsedExpression>>(std::move(expr));
 }
 unique_ptr<ParsedExpression> PEGTransformerFactory::TransformAnonymousParameter(PEGTransformer &transformer) {
 	// AnonymousParameter <- '?'
@@ -2042,7 +2042,7 @@ static unique_ptr<ParsedExpression> TransformStringLiteralExpression(PEGTransfor
 // LiteralExpression <- StringLiteral / NumberLiteral / 'NULL' / 'TRUE' / 'FALSE'
 unique_ptr<ParsedExpression> PEGTransformerFactory::TransformLiteralExpression(PEGTransformer &transformer,
                                                                                ParseResult &choice_result) {
-	if (choice_result.name == "StringLiteral") {
+	if (choice_result.type == ParseResultType::STRING) {
 		return TransformStringLiteralExpression(transformer, choice_result.Cast<StringLiteralParseResult>());
 	}
 	return transformer.Transform<unique_ptr<ParsedExpression>>(choice_result);
@@ -2053,34 +2053,35 @@ void PEGTransformerFactory::InitializeLiteralExpressionTrampoline(PEGTransformer
 	process.ReserveChildSlots(0);
 }
 
-unique_ptr<TransformResultValue>
+arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizeLiteralExpressionTrampoline(PEGTransformer &transformer,
                                                            GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
 	auto &choice_pr = list_pr.Child<ChoiceParseResult>(0);
 	auto &choice_result = choice_pr.GetResult();
 	unique_ptr<ParsedExpression> result;
-	if (choice_result.name == "StringLiteral") {
+	if (choice_result.type == ParseResultType::STRING) {
 		result = TransformStringLiteralExpression(transformer, choice_result.Cast<StringLiteralParseResult>());
-	} else if (choice_result.name == "NumberLiteral") {
+	} else if (choice_result.type == ParseResultType::NUMBER) {
 		result = TransformNumberLiteral(transformer, choice_result);
 	} else {
 		auto &constant_list_pr = choice_result.Cast<ListParseResult>();
 		auto &constant_choice_pr = constant_list_pr.Child<ChoiceParseResult>(0);
 		auto &constant_result = constant_choice_pr.GetResult();
+		auto constant_name = constant_result.Name();
 		Value value;
-		if (constant_result.name == "NullLiteral") {
+		if (constant_name == "NullLiteral") {
 			value = TransformNullLiteral(transformer);
-		} else if (constant_result.name == "TrueLiteral") {
+		} else if (constant_name == "TrueLiteral") {
 			value = TransformTrueLiteral(transformer);
-		} else if (constant_result.name == "FalseLiteral") {
+		} else if (constant_name == "FalseLiteral") {
 			value = TransformFalseLiteral(transformer);
 		} else {
-			throw InternalException("Unexpected literal expression process child '%s'", constant_result.name);
+			throw InternalException("Unexpected literal expression process child '%s'", constant_name);
 		}
 		result = TransformConstantLiteral(transformer, value);
 	}
-	return make_uniq<TypedTransformResult<unique_ptr<ParsedExpression>>>(std::move(result));
+	return transformer.MakeResult<unique_ptr<ParsedExpression>>(std::move(result));
 }
 
 unique_ptr<ParsedExpression> PEGTransformerFactory::TransformParensExpression(PEGTransformer &transformer,
@@ -2363,11 +2364,11 @@ void PEGTransformerFactory::InitializeOverClauseTrampoline(PEGTransformer &trans
 	process.PushChild({list_pr.GetChild(1)}, 0);
 }
 
-unique_ptr<TransformResultValue>
+arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizeOverClauseTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process) {
 	auto result = process.TakeResult<unique_ptr<WindowExpression>>(0);
 	transformer.in_window_definition = false;
-	return make_uniq<TypedTransformResult<unique_ptr<WindowExpression>>>(std::move(result));
+	return transformer.MakeResult<unique_ptr<WindowExpression>>(std::move(result));
 }
 
 unique_ptr<WindowExpression> PEGTransformerFactory::TransformIdentifierWindowFrame(PEGTransformer &transformer,

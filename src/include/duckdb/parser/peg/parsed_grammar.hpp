@@ -11,6 +11,7 @@
 #include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/parser/peg/peg_parser.hpp"
 #include "duckdb/parser/peg/transformer/transform_result.hpp"
+#include "duckdb/common/arena_containers/arena_ptr.hpp"
 
 #include <functional>
 
@@ -25,7 +26,7 @@ class TransformProcess;
 class GrammarChange;
 
 using grammar_transform_process_function_t =
-    std::function<unique_ptr<TransformProcess>(PEGTransformer &, ParseResult &)>;
+    std::function<arena_ptr<TransformProcess>(PEGTransformer &, ParseResult &)>;
 using grammar_cursor_function_t = std::function<bool(const PEGExpression &)>;
 using terminal_rule_overrides_t = case_insensitive_map_t<unique_ptr<Matcher>>;
 using terminal_rule_matcher_factory_t = std::function<unique_ptr<Matcher>(const PEGKeywordHelper &)>;
@@ -40,6 +41,7 @@ struct ParsedGrammarRule {
 	grammar_transform_process_function_t transform_process;
 	//! See ParsedGrammar::SetTransformProcess
 	bool collapsible = false;
+	optional_idx generated_transform;
 };
 
 //! Mutable, owning representation of a PEG grammar before matcher compilation.
@@ -72,7 +74,7 @@ public:
 	//! transform clears that promise unless the caller repeats it, since it is a property of the transform.
 	DUCKDB_API void SetTransformProcess(std::string_view rule_name,
 	                                    grammar_transform_process_function_t transform_process,
-	                                    bool collapsible = false);
+	                                    bool collapsible = false, optional_idx generated_transform = optional_idx());
 	DUCKDB_API void AddTerminalRuleOverride(const string &rule_name, terminal_rule_matcher_factory_t matcher_factory);
 
 private:
@@ -101,16 +103,18 @@ private:
 //! Immutable semantic data referenced directly by matchers and parse results.
 struct CompiledGrammarRule {
 	CompiledGrammarRule(string name_p, grammar_transform_process_function_t transform_process_p,
-	                    bool collapsible_p = false)
-	    : name(std::move(name_p)), transform_process(std::move(transform_process_p)), collapsible(collapsible_p) {
+	                    bool collapsible_p = false, optional_idx generated_transform_p = optional_idx())
+	    : name(std::move(name_p)), transform_process(std::move(transform_process_p)), collapsible(collapsible_p),
+	      generated_transform(generated_transform_p) {
 	}
 
-	unique_ptr<TransformProcess> StartTransform(PEGTransformer &transformer, ParseResult &parse_result) const;
+	arena_ptr<TransformProcess> StartTransform(PEGTransformer &transformer, ParseResult &parse_result) const;
 
 	string name;
 	grammar_transform_process_function_t transform_process;
 	//! See ParsedGrammar::SetTransformProcess
 	bool collapsible;
+	optional_idx generated_transform;
 };
 
 } // namespace duckdb
