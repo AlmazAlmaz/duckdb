@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/parser/sql_statement.hpp"
+#include "duckdb/parser/expression_depth_check.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/parser/query_node.hpp"
 #include "duckdb/parser/column_list.hpp"
@@ -118,5 +119,6 @@ private:
 
 	ParserOptions options;
 	shared_ptr<CompiledGrammar> compiled_grammar;
+	ExpressionDepthCheck depth_check;
 };
 } // namespace duckdb

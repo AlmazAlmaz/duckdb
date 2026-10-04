@@ -53,7 +53,7 @@ string PEGTransformerFactory::TransformIdentifierOrKeyword(PEGTransformer &trans
 LogicalType PEGTransformerFactory::TransformType(PEGTransformer &transformer,
                                                  unique_ptr<ParsedExpression> type_variations,
                                                  const optional<vector<int64_t>> &array_bounds) {
-	auto array_depth_guard = transformer.StackCheck(array_bounds ? array_bounds->size() : 0);
+	transformer.AddDepth(array_bounds ? array_bounds->size() : 0);
 	auto type = std::move(type_variations);
 	if (array_bounds) {
 		for (auto array_size : *array_bounds) {
@@ -67,6 +67,10 @@ LogicalType PEGTransformerFactory::TransformType(PEGTransformer &transformer,
 				type = make_uniq<TypeExpression>(Identifier("array"), std::move(children_types));
 			}
 		}
+	}
+	if (transformer.MayExceedDepth() &&
+	    (type->GetExpressionClass() != ExpressionClass::TYPE || !type->Cast<TypeExpression>().GetChildren().empty())) {
+		transformer.type_depth_check.Verify(*type);
 	}
 	return LogicalType::UNBOUND(std::move(type));
 }
@@ -232,6 +236,7 @@ PEGTransformerFactory::TransformFloatType(PEGTransformer &transformer,
 	}
 	vector<unique_ptr<ParsedExpression>> modifiers;
 	modifiers.push_back(std::move(number_literal.value()));
+	transformer.AddDepth(1);
 	return make_uniq<TypeExpression>(Identifier("FLOAT"), std::move(modifiers));
 }
 
