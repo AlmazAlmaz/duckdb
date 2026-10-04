@@ -862,8 +862,7 @@ unique_ptr<BoundCreateTableInfo> Binder::BindCreateTableInfo(unique_ptr<CreateIn
 
 	} else {
 		SetCatalogLookupCallback([&dependencies, &subdependency = result->subdependency, &schema](CatalogEntry &entry) {
-			if (&schema.ParentCatalog() != &entry.ParentCatalog()) {
-				// Don't register dependencies between catalogs
+			if (!DependencyManager::CanDepend(schema.ParentCatalog(), entry.ParentCatalog())) {
 				return;
 			}
 
@@ -883,6 +882,7 @@ unique_ptr<BoundCreateTableInfo> Binder::BindCreateTableInfo(unique_ptr<CreateIn
 		auto type_binder = Binder::CreateBinder(context, *this);
 		type_binder->SetSearchPath(result->schema.catalog, result->schema.name);
 		const bool column_types_are_dependencies = catalog.Compatibility() == SqlCompatibility::POSTGRES;
+		auto dependency_manager = catalog.GetDependencyManager();
 		for (idx_t i = 0; i < base.columns.PhysicalColumnCount(); i++) {
 			auto &column = base.columns.GetColumnMutable(PhysicalIndex(i));
 			result->AddSubDependency(AlterTableType::REMOVE_COLUMN, column.Name());
@@ -895,9 +895,13 @@ unique_ptr<BoundCreateTableInfo> Binder::BindCreateTableInfo(unique_ptr<CreateIn
 				    previous.entry.name != Identifier(column.Type().GetAlias())) {
 					continue;
 				}
-				EntryLookupInfo lookup(CatalogType::TYPE_ENTRY,
-				                       QualifiedName::FromCatalogSchema(previous.catalog, previous.entry.schema_path,
-				                                                        previous.entry.name));
+				auto current = previous;
+				if (dependency_manager && previous.catalog == catalog.GetName()) {
+					current = dependency_manager->WithCurrentNames(catalog.GetCatalogTransaction(context), previous);
+				}
+				EntryLookupInfo lookup(
+				    CatalogType::TYPE_ENTRY,
+				    QualifiedName::FromCatalogSchema(current.catalog, current.entry.schema_path, current.entry.name));
 				auto entry = type_binder->EntryRetriever().GetEntry(lookup, OnEntryNotFound::RETURN_NULL);
 				if (entry && entry->Cast<TypeCatalogEntry>().user_type == column.Type()) {
 					break;
@@ -941,8 +945,6 @@ unique_ptr<BoundCreateTableInfo> Binder::BindCreateTableInfo(unique_ptr<CreateIn
 
 	// SereneDB fork: allow zero-physical-column tables (e.g. CREATE TABLE t();)
 	// so that indexes / constraints can still be attached later.
-
-	base.dependencies.VerifyDependencies(schema.catalog, base.GetTableName());
 
 #ifdef DEBUG
 	// Ensure all types are bound

@@ -199,19 +199,28 @@ public:
 	Identifier name;
 	//! The table that owns this entry, for entries that are not unique within their schema (triggers)
 	Identifier table;
+	Identifier catalog {};
 
 public:
+	static bool SamePath(const vector<Identifier> &a, const vector<Identifier> &b) {
+		return std::equal(a.begin(), a.end(), b.begin(), b.end(), IdentifierEquality(true));
+	}
+
 	bool operator==(const CatalogEntryInfo &other) const {
+		IdentifierEquality same(true);
 		if (other.type != type) {
 			return false;
 		}
-		if (other.schema_path != schema_path) {
+		if (!SamePath(other.schema_path, schema_path)) {
 			return false;
 		}
-		if (other.name != name) {
+		if (!same(other.name, name)) {
 			return false;
 		}
-		if (other.table != table) {
+		if (!same(other.table, table)) {
+			return false;
+		}
+		if (!same(other.catalog, catalog)) {
 			return false;
 		}
 		return true;

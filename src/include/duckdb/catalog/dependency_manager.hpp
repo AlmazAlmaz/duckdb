@@ -11,8 +11,11 @@
 #include "duckdb/catalog/catalog_entry.hpp"
 #include "duckdb/catalog/catalog_set.hpp"
 #include "duckdb/catalog/dependency.hpp"
+#include "duckdb/catalog/dependency_list.hpp"
 #include "duckdb/catalog/catalog_entry_map.hpp"
 #include "duckdb/catalog/catalog_transaction.hpp"
+#include "duckdb/common/case_insensitive_map.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "duckdb/common/stack.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -86,11 +89,13 @@ class DependencyManager {
 	friend class CatalogSet;
 
 public:
-	explicit DependencyManager(DuckCatalog &catalog);
+	DependencyManager(DuckCatalog &catalog, bool case_sensitive);
 
 	//! Scans all dependencies, returning pairs of (object, dependent)
 	void Scan(ClientContext &context,
 	          const std::function<void(CatalogEntry &, CatalogEntry &, const DependencyDependentFlags &)> &callback);
+	void ScanEdges(CatalogTransaction transaction, CatalogEntry &entry, bool subjects,
+	               const std::function<void(CatalogEntry &, const DependencyDependentFlags &)> &callback);
 	//! Removes the (dependent -> subject) dependency edge if present; one direction only, no-op when absent.
 	void RemoveDependencyBetween(CatalogTransaction transaction, CatalogEntry &dependent, CatalogEntry &subject);
 
@@ -105,10 +110,18 @@ public:
 	void ReorderEntries(catalog_entry_vector_t &entries, ClientContext &context,
 	                    const created_by_owner_t &created_by_owner);
 
+	static bool CanDepend(Catalog &dependent, Catalog &subject);
+	void ScanDependentEntries(CatalogTransaction transaction, CatalogEntry &object,
+	                          const std::function<void(CatalogEntry &)> &callback);
+	void VerifyForeignSubjects(const vector<reference<DependencyEntry>> &dependencies);
+	void VerifyForeignDependents(const vector<reference<CatalogEntry>> &dropped);
+
 private:
 	DuckCatalog &catalog;
 	CatalogSet subjects;
 	CatalogSet dependents;
+	mutex foreign_lock;
+	case_insensitive_set_t foreign_catalogs;
 
 private:
 	bool IsSystemEntry(const CatalogEntry &entry) const;
@@ -130,6 +143,7 @@ public:
 	static CatalogEntryInfo GetLookupProperties(const CatalogEntry &entry);
 	static CatalogEntryInfo GetLookupProperties(CatalogTransaction transaction, const CatalogEntry &entry);
 	optional_ptr<CatalogEntry> LookupEntry(CatalogTransaction transaction, const LogicalDependency &dependency);
+	LogicalDependency WithCurrentNames(CatalogTransaction transaction, LogicalDependency dependency);
 	//! The drop error for an entry with dependents, for catalogs that track their own dependents.
 	DUCKDB_API static string FormatDropError(const CatalogEntry &object,
 	                                         const vector<reference<CatalogEntry>> &dependents);
@@ -172,6 +186,14 @@ private:
 	using dependency_callback_t = const std::function<void(DependencyEntry &)>;
 	void ScanDependents(CatalogTransaction transaction, const CatalogEntryInfo &info, dependency_callback_t &callback);
 	void ScanSubjects(CatalogTransaction transaction, const CatalogEntryInfo &info, dependency_callback_t &callback);
+	void ScanAllDependents(CatalogTransaction transaction, const CatalogEntryInfo &info,
+	                       dependency_callback_t &callback);
+	void ForEachCatalog(CatalogTransaction transaction, const std::function<bool(DuckCatalog &)> &visit,
+	                    const std::function<void(DuckCatalog &, CatalogTransaction)> &callback);
+	bool MayDependOn(const Identifier &catalog_name);
+	LogicalDependencyList EntryDependencies(CatalogTransaction transaction, CatalogEntry &object);
+	void RemoveDependencies(CatalogTransaction transaction, const CatalogEntry &object,
+	                        const LogicalDependencyList &dependencies);
 	void ScanSetInternal(CatalogTransaction transaction, const CatalogEntryInfo &info, bool subjects,
 	                     dependency_callback_t &callback);
 	void PrintSubjects(CatalogTransaction transaction, const CatalogEntryInfo &info);

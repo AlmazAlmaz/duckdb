@@ -24,16 +24,17 @@ uint64_t LogicalDependencyHashFunction::operator()(const LogicalDependency &a) c
 }
 
 bool LogicalDependencyEquality::operator()(const LogicalDependency &a, const LogicalDependency &b) const {
+	IdentifierEquality same(true);
 	if (a.entry.type != b.entry.type) {
 		return false;
 	}
-	if (a.entry.name != b.entry.name) {
+	if (!same(a.entry.name, b.entry.name)) {
 		return false;
 	}
-	if (a.entry.schema_path != b.entry.schema_path) {
+	if (!CatalogEntryInfo::SamePath(a.entry.schema_path, b.entry.schema_path)) {
 		return false;
 	}
-	if (a.catalog != b.catalog) {
+	if (!same(a.catalog, b.catalog)) {
 		return false;
 	}
 	return true;
@@ -59,18 +60,14 @@ LogicalDependency::LogicalDependency(CatalogEntry &entry) {
 
 LogicalDependency::LogicalDependency(optional_ptr<Catalog> catalog_p, CatalogEntryInfo entry_p, Identifier catalog_str)
     : entry(std::move(entry_p)), catalog(std::move(catalog_str)) {
-	if (catalog_p) {
+	if (catalog_p && !catalog_p->UsesCatalogLog()) {
 		catalog = catalog_p->GetName();
 	}
 }
 
 bool LogicalDependency::Refers(const CatalogEntry &target) const {
-	return entry.type == target.type && entry.name == target.name && entry.schema_path == target.ParentSchemaPath();
-}
-
-bool LogicalDependency::operator==(const LogicalDependency &other) const {
-	return other.entry.name == entry.name && other.entry.schema_path == entry.schema_path &&
-	       other.entry.type == entry.type;
+	D_ASSERT(oid && target.oid);
+	return oid == target.oid;
 }
 
 void LogicalDependencyList::AddDependency(CatalogEntry &entry) {
@@ -101,17 +98,6 @@ void LogicalDependencyList::AddDependency(const LogicalDependency &entry) {
 bool LogicalDependencyList::Contains(CatalogEntry &entry_p) {
 	LogicalDependency logical_entry(entry_p);
 	return set.count(logical_entry);
-}
-
-void LogicalDependencyList::VerifyDependencies(Catalog &catalog, const Identifier &name) {
-	for (auto &dep : set) {
-		if (dep.catalog != catalog.GetName()) {
-			throw DependencyException(
-			    "Error adding dependency for object %s - dependency %s is in catalog "
-			    "%s, which does not match the catalog %s.\nCross catalog dependencies are not supported.",
-			    name, dep.entry.name, dep.catalog, catalog.GetName());
-		}
-	}
 }
 
 const LogicalDependencyList::create_info_set_t &LogicalDependencyList::Set() const {
