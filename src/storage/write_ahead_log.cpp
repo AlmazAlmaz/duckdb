@@ -390,7 +390,7 @@ void WriteAheadLog::WriteDropTable(const TableCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::DROP_TABLE);
 	// the qualified name carries the (possibly nested) containing schema path + the table name; the legacy immediate
 	// schema name is derived from it when serializing for storage versions older than v2.0.0
-	serializer.WriteEntry(WALDropTable(QualifiedName(entry.ParentSchemaPath(), entry.name)));
+	serializer.WriteEntry(WALDropTable(QualifiedName(entry.ParentSchemaPath(), entry.name), entry.oid));
 	serializer.End();
 }
 
@@ -417,7 +417,7 @@ void WriteAheadLog::WriteCreateSequence(const SequenceCatalogEntry &entry) {
 
 void WriteAheadLog::WriteDropSequence(const SequenceCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::DROP_SEQUENCE);
-	serializer.WriteEntry(WALDropSequence(QualifiedName(entry.ParentSchemaPath(), entry.name)));
+	serializer.WriteEntry(WALDropSequence(QualifiedName(entry.ParentSchemaPath(), entry.name), entry.oid));
 	serializer.End();
 }
 
@@ -441,7 +441,7 @@ void WriteAheadLog::WriteCreateMacro(const ScalarMacroCatalogEntry &entry) {
 
 void WriteAheadLog::WriteDropMacro(const ScalarMacroCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::DROP_MACRO);
-	serializer.WriteEntry(WALDropMacro(QualifiedName(entry.ParentSchemaPath(), entry.name)));
+	serializer.WriteEntry(WALDropMacro(QualifiedName(entry.ParentSchemaPath(), entry.name), entry.oid));
 	serializer.End();
 }
 
@@ -453,7 +453,7 @@ void WriteAheadLog::WriteCreateTableMacro(const TableMacroCatalogEntry &entry) {
 
 void WriteAheadLog::WriteDropTableMacro(const TableMacroCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::DROP_TABLE_MACRO);
-	serializer.WriteEntry(WALDropTableMacro(QualifiedName(entry.ParentSchemaPath(), entry.name)));
+	serializer.WriteEntry(WALDropTableMacro(QualifiedName(entry.ParentSchemaPath(), entry.name), entry.oid));
 	serializer.End();
 }
 
@@ -526,7 +526,7 @@ void WriteAheadLog::WriteCreateType(const TypeCatalogEntry &entry) {
 
 void WriteAheadLog::WriteDropType(const TypeCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::DROP_TYPE);
-	serializer.WriteEntry(WALDropType(QualifiedName(entry.ParentSchemaPath(), entry.name)));
+	serializer.WriteEntry(WALDropType(QualifiedName(entry.ParentSchemaPath(), entry.name), entry.oid));
 	serializer.End();
 }
 
@@ -542,7 +542,7 @@ void WriteAheadLog::WriteCreateTrigger(const TriggerCatalogEntry &entry) {
 void WriteAheadLog::WriteDropTrigger(const TriggerCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::DROP_TRIGGER);
 	serializer.WriteEntry(
-	    WALDropTrigger(QualifiedName(entry.ParentSchemaPath(), entry.name), entry.base_table->Table()));
+	    WALDropTrigger(QualifiedName(entry.ParentSchemaPath(), entry.name), entry.base_table->Table(), entry.oid));
 	serializer.End();
 }
 
@@ -554,7 +554,7 @@ void WriteAheadLog::WriteCreateTokenizer(const StandardEntry &entry) {
 
 void WriteAheadLog::WriteDropTokenizer(const StandardEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::DROP_TOKENIZER);
-	serializer.WriteEntry(WALDropTokenizer {QualifiedName(entry.ParentSchemaPath(), entry.name)});
+	serializer.WriteEntry(WALDropTokenizer {QualifiedName(entry.ParentSchemaPath(), entry.name), entry.oid});
 	serializer.End();
 }
 
@@ -605,7 +605,7 @@ void WriteAheadLog::WriteCreateView(const ViewCatalogEntry &entry) {
 
 void WriteAheadLog::WriteDropView(const ViewCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::DROP_VIEW);
-	serializer.WriteEntry(WALDropView(QualifiedName(entry.ParentSchemaPath(), entry.name)));
+	serializer.WriteEntry(WALDropView(QualifiedName(entry.ParentSchemaPath(), entry.name), entry.oid));
 	serializer.End();
 }
 
@@ -616,7 +616,7 @@ void WriteAheadLog::WriteDropSchema(const SchemaCatalogEntry &entry) {
 	WriteAheadLogSerializer serializer(*this, WALType::DROP_SCHEMA);
 	// serialize the schema as a QualifiedName: parent schemas form the path, the schema name is the name. For storage
 	// versions older than v2.0.0 (which only support top-level schemas) the legacy "schema" name field is written.
-	serializer.WriteEntry(WALDropSchema {entry.name, QualifiedName::FromPath(entry.GetSchemaPath())});
+	serializer.WriteEntry(WALDropSchema {entry.name, QualifiedName::FromPath(entry.GetSchemaPath()), entry.oid});
 	serializer.End();
 }
 

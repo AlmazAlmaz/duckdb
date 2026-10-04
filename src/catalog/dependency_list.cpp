@@ -53,6 +53,7 @@ LogicalDependency::LogicalDependency(CatalogEntry &entry) {
 		this->entry.name = entry.name;
 		this->entry.type = entry.type;
 		catalog = entry.ParentCatalog().GetName();
+		oid = entry.oid;
 	}
 }
 
@@ -61,6 +62,10 @@ LogicalDependency::LogicalDependency(optional_ptr<Catalog> catalog_p, CatalogEnt
 	if (catalog_p) {
 		catalog = catalog_p->GetName();
 	}
+}
+
+bool LogicalDependency::Refers(const CatalogEntry &target) const {
+	return entry.type == target.type && entry.name == target.name && entry.schema_path == target.ParentSchemaPath();
 }
 
 bool LogicalDependency::operator==(const LogicalDependency &other) const {

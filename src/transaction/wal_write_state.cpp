@@ -141,6 +141,7 @@ void WALWriteState::WriteCatalogEntry(CatalogEntry &entry, idx_t change, data_pt
 		auto column_name = deserializer.ReadProperty<string>(100, "column_name");
 		parse_info = deserializer.ReadProperty<unique_ptr<ParseInfo>>(101, "alter_info");
 		deserializer.End();
+		parse_info->Cast<AlterInfo>().oid = parent.oid;
 	}
 	auto alter_info = parse_info ? &parse_info->Cast<AlterInfo>() : nullptr;
 	if (!catalog_run) {

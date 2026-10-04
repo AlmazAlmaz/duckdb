@@ -4,6 +4,7 @@
 
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/duck_catalog.hpp"
 
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/common/algorithm.hpp"
@@ -501,6 +502,12 @@ void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, con
 
 	// Get the table from the catalog, so we can add it to the binder.
 	auto &catalog = table_info.GetDB().GetCatalog();
+	auto transaction = catalog.GetCatalogTransaction(context);
+	auto visible = catalog.Cast<DuckCatalog>().GetOidIndex().GetVisible(table_info.GetTableOid(), transaction.view);
+	if (visible) {
+		Bind(context, visible->Cast<TableCatalogEntry>(), index_type);
+		return;
+	}
 	auto &table_entry = catalog.GetEntry<TableCatalogEntry>(
 	    context,
 	    QualifiedName::FromCatalogSchema(catalog.GetName(), table_info.GetSchemaPath(), table_info.GetTableName()));

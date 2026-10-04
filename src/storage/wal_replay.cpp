@@ -403,8 +403,8 @@ protected:
 	void ReplayCheckpoint();
 
 private:
-	void ReplayIndexData(IndexStorageInfo &info);
 	optional_ptr<TableLogStorage> LogTable(const char *what) const;
+	void ReplayIndexData(IndexStorageInfo &info, bool keep);
 	std::span<const data_t> ReadBitmap(field_id_t size_field, field_id_t bitmap_field, const char *tag);
 
 private:
@@ -1134,6 +1134,83 @@ static QualifiedName ReplayQualifiedName(Catalog &catalog, const QualifiedName &
 	return entry_name.WithCatalog(catalog.GetName()).WithName(name);
 }
 
+static optional_ptr<CatalogEntry> ReplayEntryByOid(Catalog &catalog, const CatalogTransaction &transaction, idx_t oid) {
+	if (!oid || !catalog.UsesCatalogLog()) {
+		return nullptr;
+	}
+	return catalog.Cast<DuckCatalog>().GetOidIndex().GetVisible(oid, transaction.view);
+}
+
+static bool ReplayHasSchemaPath(const CatalogEntry &entry) {
+	switch (entry.type) {
+	case CatalogType::ROLE_ENTRY:
+	case CatalogType::DATABASE_ENTRY:
+	case CatalogType::FOREIGN_SERVER_ENTRY:
+		return false;
+	default:
+		return true;
+	}
+}
+
+static optional_ptr<const SchemaInfo> ReplayContainingSchema(const CatalogEntry &entry) {
+	if (entry.type == CatalogType::SCHEMA_ENTRY) {
+		return entry.Cast<SchemaCatalogEntry>().GetSchemaInfo()->parent.get();
+	}
+	return entry.Cast<StandardEntry>().schema_info.get();
+}
+
+static vector<Identifier> ReplaySchemaPath(const CatalogTransaction &transaction,
+                                           optional_ptr<const SchemaInfo> schema) {
+	return schema ? schema->Path(transaction.view) : vector<Identifier>();
+}
+
+static void ReplayParentSchema(Catalog &catalog, ClientContext &context, CreateInfo &info) {
+	auto transaction = catalog.GetCatalogTransaction(context);
+	auto schema = ReplayEntryByOid(catalog, transaction, info.schema_oid);
+	if (!schema || schema->type != CatalogType::SCHEMA_ENTRY) {
+		return;
+	}
+	auto path = ReplaySchemaPath(transaction, schema->Cast<SchemaCatalogEntry>().GetSchemaInfo().get());
+	if (info.type == CatalogType::SCHEMA_ENTRY) {
+		path.push_back(info.Cast<CreateSchemaInfo>().SchemaName());
+		info.SetQualifiedName(QualifiedName::FromCatalogSchema(catalog.GetName(), std::move(path), Identifier()));
+		return;
+	}
+	info.SetQualifiedName(
+	    QualifiedName::FromCatalogSchema(catalog.GetName(), std::move(path), info.GetQualifiedName().Name()));
+}
+
+static void ReplayDropTarget(Catalog &catalog, ClientContext &context, idx_t oid, DropInfo &info) {
+	auto transaction = catalog.GetCatalogTransaction(context);
+	auto target = ReplayEntryByOid(catalog, transaction, oid);
+	if (!target || !ReplayHasSchemaPath(*target)) {
+		return;
+	}
+	auto path = ReplaySchemaPath(transaction, ReplayContainingSchema(*target));
+	if (target->type != CatalogType::SCHEMA_ENTRY) {
+		info.SetQualifiedName(QualifiedName::FromCatalogSchema(catalog.GetName(), std::move(path), target->name));
+		return;
+	}
+	path.push_back(target->name);
+	path.insert(path.begin(), catalog.GetName());
+	info.SetQualifiedName(QualifiedName::FromPath(std::move(path)));
+}
+
+static void ReplayAlterTarget(Catalog &catalog, ClientContext &context, AlterInfo &info) {
+	auto transaction = catalog.GetCatalogTransaction(context);
+	auto target = ReplayEntryByOid(catalog, transaction, info.oid);
+	if (!target || !ReplayHasSchemaPath(*target)) {
+		return;
+	}
+	auto path = ReplaySchemaPath(transaction, ReplayContainingSchema(*target));
+	if (info.type == AlterType::ALTER_SCHEMA) {
+		path.push_back(target->name);
+		info.SetQualifiedName(QualifiedName::FromCatalogSchema(catalog.GetName(), std::move(path), Identifier()));
+		return;
+	}
+	info.SetQualifiedName(QualifiedName::FromCatalogSchema(catalog.GetName(), std::move(path), target->name));
+}
+
 //===--------------------------------------------------------------------===//
 // Replay Table
 //===--------------------------------------------------------------------===//
@@ -1147,6 +1224,7 @@ void WriteAheadLogDeserializer::ReplayCreateTable() {
 		state.table_storage->Create(context, std::move(info));
 		return;
 	}
+	ReplayParentSchema(catalog, context, *info);
 	// bind the constraints to the table again
 	auto binder = Binder::CreateBinder(context);
 	// the qualified name is [catalog, schema_path..., name] - navigate the (possibly nested) schema path
@@ -1174,6 +1252,7 @@ void WriteAheadLogDeserializer::ReplayDropTable() {
 		state.current_table = nullptr;
 		return;
 	}
+	ReplayDropTarget(catalog, context, entry.oid, info);
 
 	// Remove any replay indexes of this table.
 	auto table_entry =
@@ -1200,7 +1279,7 @@ void ReplayWithoutIndex(ClientContext &context, Catalog &catalog, AlterInfo &inf
 	catalog.Alter(context, info);
 }
 
-void WriteAheadLogDeserializer::ReplayIndexData(IndexStorageInfo &info) {
+void WriteAheadLogDeserializer::ReplayIndexData(IndexStorageInfo &info, bool keep) {
 	D_ASSERT(!info.name.empty());
 
 	auto &single_file_sm = db.GetStorageManager().Cast<SingleFileStorageManager>();
@@ -1220,6 +1299,9 @@ void WriteAheadLogDeserializer::ReplayIndexData(IndexStorageInfo &info) {
 
 			list.ReadElement<bool>(data_ptr, allocation_size);
 			memset(data_ptr + allocation_size, 0, buffer_handle.GetFileBuffer().Size() - allocation_size);
+			if (!keep) {
+				continue;
+			}
 
 			// For read-only mode, retain the transient block handle and release the pin held by the buffer handle. The
 			// buffer can then be evicted to temporary storage until the index is bound.
@@ -1232,12 +1314,9 @@ void WriteAheadLogDeserializer::ReplayIndexData(IndexStorageInfo &info) {
 			}
 
 			// Convert the buffer handle to a persistent block and store the block id.
-			if (!deserialize_only) {
-				auto block_id = block_manager->GetFreeBlockIdForCheckpoint();
-				block_manager->ConvertToPersistent(context, block_id, std::move(block_handle),
-				                                   std::move(buffer_handle));
-				data_info.block_pointers[j].block_id = block_id;
-			}
+			auto block_id = block_manager->GetFreeBlockIdForCheckpoint();
+			block_manager->ConvertToPersistent(context, block_id, std::move(block_handle), std::move(buffer_handle));
+			data_info.block_pointers[j].block_id = block_id;
 		}
 	});
 }
@@ -1256,15 +1335,18 @@ void WriteAheadLogDeserializer::ReplayAlter() {
 		return;
 	}
 	if (!alter_info.IsAddUniqueConstraint() || catalog.UsesCatalogLog()) {
-		if (!DeserializeOnly() && alter_info.IsAddUniqueConstraint()) {
-			alter_info.Cast<AddConstraintInfo>().constraint->SetBackingIndexOid(
-			    DatabaseManager::Get(context).NextOid());
+		if (!DeserializeOnly()) {
+			ReplayAlterTarget(catalog, context, alter_info);
+			if (alter_info.IsAddUniqueConstraint()) {
+				alter_info.Cast<AddConstraintInfo>().constraint->SetBackingIndexOid(
+				    DatabaseManager::Get(context).NextOid());
+			}
 		}
 		return ReplayWithoutIndex(context, catalog, alter_info, DeserializeOnly());
 	}
 
 	auto index_storage_info = deserializer.ReadProperty<IndexStorageInfo>(102, "index_storage_info");
-	ReplayIndexData(index_storage_info);
+	ReplayIndexData(index_storage_info, !DeserializeOnly());
 	if (DeserializeOnly()) {
 		return;
 	}
@@ -1333,6 +1415,7 @@ void WriteAheadLogDeserializer::ReplayCreateView() {
 	if (DeserializeOnly()) {
 		return;
 	}
+	ReplayParentSchema(catalog, context, *entry);
 	catalog.CreateView(context, entry->Cast<CreateViewInfo>());
 }
 
@@ -1346,6 +1429,7 @@ void WriteAheadLogDeserializer::ReplayDropView() {
 	if (DeserializeOnly()) {
 		return;
 	}
+	ReplayDropTarget(catalog, context, entry.oid, info);
 	catalog.DropEntry(context, info);
 }
 
@@ -1368,6 +1452,7 @@ void WriteAheadLogDeserializer::ReplayCreateSchema() {
 	if (DeserializeOnly()) {
 		return;
 	}
+	ReplayParentSchema(catalog, context, *entry.info);
 	auto &schema_info = entry.info->Cast<CreateSchemaInfo>();
 	if (catalog.UsesCatalogLog()) {
 		auto schema_path = schema_info.ParentSchemas();
@@ -1398,7 +1483,7 @@ void WriteAheadLogDeserializer::ReplayDropSchema() {
 	if (DeserializeOnly()) {
 		return;
 	}
-
+	ReplayDropTarget(catalog, context, entry.oid, info);
 	catalog.DropEntry(context, info);
 }
 
@@ -1412,6 +1497,7 @@ void WriteAheadLogDeserializer::ReplayCreateType() {
 	if (DeserializeOnly()) {
 		return;
 	}
+	ReplayParentSchema(catalog, context, *info);
 	catalog.CreateType(context, info->Cast<CreateTypeInfo>());
 }
 
@@ -1425,7 +1511,7 @@ void WriteAheadLogDeserializer::ReplayDropType() {
 	if (DeserializeOnly()) {
 		return;
 	}
-
+	ReplayDropTarget(catalog, context, entry.oid, info);
 	catalog.DropEntry(context, info);
 }
 
@@ -1439,6 +1525,7 @@ void WriteAheadLogDeserializer::ReplayCreateTrigger() {
 	if (DeserializeOnly()) {
 		return;
 	}
+	ReplayParentSchema(catalog, context, *info);
 	auto &trigger_info = info->Cast<CreateTriggerInfo>();
 	// the trigger lives in the same (possibly nested) schema as its base table
 	auto &table = Catalog::GetEntry<TableCatalogEntry>(
@@ -1462,6 +1549,7 @@ void WriteAheadLogDeserializer::ReplayDropTrigger() {
 		throw InternalException("WAL replay: DROP TRIGGER entry has an empty table name for trigger %s",
 		                        info.GetQualifiedName().Name());
 	}
+	ReplayDropTarget(catalog, context, entry.oid, info);
 	// the trigger lives in the same (possibly nested) schema as its base table
 	auto table = Catalog::GetEntry<TableCatalogEntry>(context, info.GetQualifiedName().WithName(std::move(table_name)),
 	                                                  info.if_not_found);
@@ -1479,6 +1567,7 @@ void WriteAheadLogDeserializer::ReplayCreateTokenizer() {
 	if (DeserializeOnly()) {
 		return;
 	}
+	ReplayParentSchema(catalog, context, *info);
 	auto transaction = catalog.GetCatalogTransaction(context);
 	auto &schema = catalog.GetEntrySchema(transaction, info->GetQualifiedName());
 	schema.Cast<DuckSchemaEntry>().CreateTokenizer(transaction, info->Cast<CreateTokenizerInfo>());
@@ -1494,7 +1583,7 @@ void WriteAheadLogDeserializer::ReplayDropTokenizer() {
 	if (DeserializeOnly()) {
 		return;
 	}
-
+	ReplayDropTarget(catalog, context, entry.oid, info);
 	catalog.DropEntry(context, info);
 }
 
@@ -1572,7 +1661,7 @@ void WriteAheadLogDeserializer::ReplayCreateSequence() {
 	if (DeserializeOnly()) {
 		return;
 	}
-
+	ReplayParentSchema(catalog, context, *entry);
 	catalog.CreateSequence(context, entry->Cast<CreateSequenceInfo>());
 }
 
@@ -1586,7 +1675,7 @@ void WriteAheadLogDeserializer::ReplayDropSequence() {
 	if (DeserializeOnly()) {
 		return;
 	}
-
+	ReplayDropTarget(catalog, context, entry.oid, info);
 	catalog.DropEntry(context, info);
 }
 
@@ -1597,6 +1686,11 @@ void WriteAheadLogDeserializer::ReplaySequenceValue() {
 		return;
 	}
 
+	auto target = ReplayEntryByOid(catalog, catalog.GetCatalogTransaction(context), entry.oid);
+	if (target && target->type == CatalogType::SEQUENCE_ENTRY) {
+		target->Cast<SequenceCatalogEntry>().ReplayValue(entry.usage_count, entry.counter, entry.last_value);
+		return;
+	}
 	// fetch the sequence from the catalog
 	auto seq = catalog.GetEntry<SequenceCatalogEntry>(
 	    context, ReplayEntryName(catalog, entry.qualified_name),
@@ -1625,7 +1719,7 @@ void WriteAheadLogDeserializer::ReplayCreateMacro() {
 	if (DeserializeOnly()) {
 		return;
 	}
-
+	ReplayParentSchema(catalog, context, *entry);
 	catalog.CreateFunction(context, entry->Cast<CreateMacroInfo>());
 }
 
@@ -1639,7 +1733,7 @@ void WriteAheadLogDeserializer::ReplayDropMacro() {
 	if (DeserializeOnly()) {
 		return;
 	}
-
+	ReplayDropTarget(catalog, context, entry.oid, info);
 	catalog.DropEntry(context, info);
 }
 
@@ -1652,6 +1746,7 @@ void WriteAheadLogDeserializer::ReplayCreateTableMacro() {
 	if (DeserializeOnly()) {
 		return;
 	}
+	ReplayParentSchema(catalog, context, *entry);
 	catalog.CreateFunction(context, entry->Cast<CreateMacroInfo>());
 }
 
@@ -1665,7 +1760,7 @@ void WriteAheadLogDeserializer::ReplayDropTableMacro() {
 	if (DeserializeOnly()) {
 		return;
 	}
-
+	ReplayDropTarget(catalog, context, entry.oid, info);
 	catalog.DropEntry(context, info);
 }
 
@@ -1676,7 +1771,10 @@ void WriteAheadLogDeserializer::ReplayCreateIndex() {
 	auto create_info = deserializer.ReadProperty<unique_ptr<CreateInfo>>(101, "index_catalog_entry");
 	auto index_info = deserializer.ReadProperty<IndexStorageInfo>(102, "index_storage_info");
 
-	ReplayIndexData(index_info);
+	auto keep = !DeserializeOnly() &&
+	            (state.table_storage ? state.table_storage->KeepsIndex(state.current_table_oid, create_info->oid)
+	                                 : !catalog.UsesCatalogLog());
+	ReplayIndexData(index_info, keep);
 	if (DeserializeOnly()) {
 		return;
 	}
@@ -1687,14 +1785,23 @@ void WriteAheadLogDeserializer::ReplayCreateIndex() {
 		info.index_type = ART::TYPE_NAME;
 	}
 	if (state.table_storage) {
-		state.table_storage->CreateIndex(state.current_table_oid, std::move(create_info), std::move(index_info));
+		if (keep) {
+			state.table_storage->CreateIndex(state.current_table_oid, std::move(create_info), std::move(index_info));
+		}
 		return;
 	}
 
-	// the table lives in the same (possibly nested) schema as the index
-	auto table_name = ReplayQualifiedName(catalog, create_info->GetQualifiedName(), info.table);
-	auto &relation = *Catalog::GetEntry(context, EntryLookupInfo(CatalogType::TABLE_ENTRY, table_name),
-	                                    OnEntryNotFound::THROW_EXCEPTION);
+	ReplayParentSchema(catalog, context, info);
+	auto indexed_relation = ReplayEntryByOid(catalog, catalog.GetCatalogTransaction(context), info.table_oid);
+	if (indexed_relation) {
+		info.table = indexed_relation->name;
+	} else {
+		// the table lives in the same (possibly nested) schema as the index
+		auto table_name = ReplayQualifiedName(catalog, create_info->GetQualifiedName(), info.table);
+		indexed_relation = Catalog::GetEntry(context, EntryLookupInfo(CatalogType::TABLE_ENTRY, table_name),
+		                                     OnEntryNotFound::THROW_EXCEPTION);
+	}
+	auto &relation = *indexed_relation;
 	if (relation.type != CatalogType::TABLE_ENTRY || !relation.Cast<TableCatalogEntry>().IsDuckTable()) {
 		relation.ParentSchema(context).CreateIndex(context, info, relation);
 		return;
@@ -1731,6 +1838,7 @@ void WriteAheadLogDeserializer::ReplayDropIndex() {
 		state.table_storage->DropIndex(state.current_table_oid, entry.oid);
 		return;
 	}
+	ReplayDropTarget(catalog, context, entry.oid, info);
 
 	// Remove the replay index, if any. Match on the index entry's oid.
 	auto index_entry =
