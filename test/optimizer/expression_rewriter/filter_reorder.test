@@ -11,7 +11,10 @@ PRAGMA explain_output = OPTIMIZED_ONLY
 query I
 SELECT current_setting('filter_reorder')
 ----
-safe
+fast
+
+statement ok
+SET filter_reorder = 'safe'
 
 query II
 EXPLAIN SELECT a FROM t WHERE a <> b AND s::INTEGER <> a AND s || b::VARCHAR <> reverse(s) AND b <> c AND a::TINYINT <> d AND c <> d
@@ -258,12 +261,12 @@ RESET filter_reorder
 query I
 SELECT current_setting('filter_reorder')
 ----
-safe
+fast
 
-statement error
+query I
 SELECT count(*) FROM range(1000) WHERE range < 100 AND range::TINYINT < range + 1
 ----
-<REGEX>:.*out of range.*
+100
 
 query I
 SELECT count(*) FROM t WHERE length(s) < length(b::VARCHAR || 'xx') AND a::TINYINT <> d
@@ -271,12 +274,12 @@ SELECT count(*) FROM t WHERE length(s) < length(b::VARCHAR || 'xx') AND a::TINYI
 388
 
 statement ok
-SET filter_reorder = 'fast'
+SET filter_reorder = 'safe'
 
-query I
+statement error
 SELECT count(*) FROM range(1000) WHERE range < 100 AND range::TINYINT < range + 1
 ----
-100
+<REGEX>:.*out of range.*
 
 query I
 SELECT count(*) FROM t WHERE length(s) < length(b::VARCHAR || 'xx') AND a::TINYINT <> d
