@@ -542,6 +542,15 @@ ErrorData DuckTransactionManager::PrepareTransaction(ClientContext &context, Tra
 	if (&catalog_owner != &db) {
 		prepared.commit_lock = storage_manager.GetCommitLock();
 	}
+	if (context.registered_state) {
+		try {
+			for (auto &state : context.registered_state->States()) {
+				state->TransactionPreWalWrite(db, context);
+			}
+		} catch (std::exception &ex) {
+			return ErrorData(ex);
+		}
+	}
 	error = transaction.AppendLocalStorage(context, db, prepared.commit_state);
 	if (!error.HasError()) {
 		error = transaction.WriteToWAL(context, db, prepared.commit_state, prepared.catalog_run);
@@ -651,6 +660,7 @@ ErrorData DuckTransactionManager::FinishPreparedTransaction(ClientContext &conte
 	}
 	auto undo_properties = transaction.GetUndoProperties();
 	unique_ptr<DuckTransaction::PreparedCommit> prepared;
+	vector<shared_ptr<ClientContextState>> states;
 	{
 		unique_lock<mutex> t_lock(transaction_lock);
 		if (transaction.prepared->applied) {
@@ -665,7 +675,8 @@ ErrorData DuckTransactionManager::FinishPreparedTransaction(ClientContext &conte
 						wal_end_offset = storage_manager.GetWALSize();
 					}
 				}
-				for (auto &state : context.registered_state->States()) {
+				states = context.registered_state->States();
+				for (auto &state : states) {
 					state->TransactionPreCheckpoint(db, context, wal_generation, wal_end_offset);
 				}
 			}
@@ -682,6 +693,9 @@ ErrorData DuckTransactionManager::FinishPreparedTransaction(ClientContext &conte
 		QueueCleanup(RemoveTransaction(transaction, store_transaction, CreateCleanupInfo()));
 	}
 	prepared.reset();
+	for (auto &state : states) {
+		state->TransactionDurable(db, context);
+	}
 	CleanupTransactions();
 	DatabaseManager::Get(db.GetDatabase()).DrainPendingTeardowns();
 	return ErrorData();
@@ -805,6 +819,7 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 	}
 	bool store_transaction = undo_properties.has_updates || undo_properties.has_index_deletes ||
 	                         undo_properties.has_catalog_changes || error.HasError();
+	vector<shared_ptr<ClientContextState>> states;
 
 	if (error.HasError()) {
 		DUCKDB_LOG(context, TransactionLogType, db, "Rollback (after failed commit)", info.commit_id);
@@ -832,7 +847,8 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 					wal_end_offset = storage_manager.GetWALSize();
 				}
 			}
-			for (auto &state : context.registered_state->States()) {
+			states = context.registered_state->States();
+			for (auto &state : states) {
 				state->TransactionPreCheckpoint(db, context, wal_generation, wal_end_offset);
 			}
 		}
@@ -878,6 +894,11 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 	if (!skip_wal_write_due_to_checkpoint && held_commit_lock.owns_lock()) {
 		held_commit_lock.unlock();
 	}
+	if (!commit_wal) {
+		for (auto &state : states) {
+			state->TransactionDurable(db, context);
+		}
+	}
 
 	if (commit_wal) {
 		// make the commit durable before acknowledging it; one fsync can cover many commits
@@ -895,6 +916,11 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 			// no checkpoint after a failed commit, as on the rollback path above
 			checkpoint_decision = CheckpointDecision(error.Message());
 			lock.reset();
+		}
+		if (synced) {
+			for (auto &state : states) {
+				state->TransactionDurable(db, context);
+			}
 		}
 		if (!retired.load(std::memory_order_acquire)) {
 			t_lock.lock();
