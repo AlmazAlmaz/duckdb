@@ -1126,8 +1126,10 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 		auto &names = csv_file_scan->GetNames();
 		// Now Do the cast-aroo
 		for (idx_t i = 0; i < csv_file_scan->column_ids.size(); i++) {
+			idx_t file_idx = i;
 			idx_t result_idx = i;
 			if (!csv_file_scan->projection_ids.empty()) {
+				file_idx = csv_file_scan->projection_ids[i].first;
 				result_idx = csv_file_scan->projection_ids[i].second;
 			}
 			if (i >= parse_chunk.ColumnCount()) {
@@ -1182,8 +1184,8 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 							    result.result_size, first_nl);
 						}
 						auto csv_error = CSVError::CastError(
-						    state_machine->options, names[i], error_msg, i, borked_line, lines_per_batch, row_byte_pos,
-						    optional_idx::Invalid(), result_vector.GetType().id(), result.path);
+						    state_machine->options, names[file_idx], error_msg, file_idx, borked_line, lines_per_batch,
+						    row_byte_pos, optional_idx::Invalid(), result_vector.GetType().id(), result.path);
 						error_handler->Error(csv_error);
 					}
 				}
@@ -1209,11 +1211,12 @@ void StringValueScanner::Flush(DataChunk &insert_chunk) {
 							      << LogicalTypeIdToString(type.id()) << "\'";
 							string error_msg = error.str();
 							FullLinePosition::SanitizeError(error_msg);
-							auto csv_error = CSVError::CastError(
-							    state_machine->options, names[i], error_msg, i, borked_line, lines_per_batch,
-							    result.line_positions_per_row[line_error].begin.GetGlobalPosition(result.result_size,
-							                                                                      first_nl),
-							    optional_idx::Invalid(), result_vector.GetType().id(), result.path);
+							auto csv_error =
+							    CSVError::CastError(state_machine->options, names[file_idx], error_msg, file_idx,
+							                        borked_line, lines_per_batch,
+							                        result.line_positions_per_row[line_error].begin.GetGlobalPosition(
+							                            result.result_size, first_nl),
+							                        optional_idx::Invalid(), result_vector.GetType().id(), result.path);
 							error_handler->Error(csv_error);
 						}
 					}
