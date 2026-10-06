@@ -24,6 +24,7 @@ struct DuckCleanupInfo {
 	//! All transactions in a cleanup info share the same lowest_visibility_bound.
 	VisibilityBound lowest_visibility_bound;
 	vector<unique_ptr<DuckTransaction>> transactions;
+	unique_ptr<DuckTransaction> discarded;
 
 	void Cleanup();
 	bool ScheduleCleanup() noexcept;
@@ -131,20 +132,22 @@ private:
 	//! transaction_lock held, immediately before RemoveTransaction, so that a failure to allocate is reported
 	//! while the transaction lists are still untouched.
 	unique_ptr<DuckCleanupInfo> CreateCleanupInfo();
+	void ReserveCleanup(DuckCleanupInfo &cleanup_info);
 	//! Remove the given transaction from the list of active transactions
 	unique_ptr<DuckCleanupInfo> RemoveTransaction(DuckTransaction &transaction,
 	                                              unique_ptr<DuckCleanupInfo> cleanup_info) noexcept;
 	//! Remove the given transaction from the list of active transactions
 	unique_ptr<DuckCleanupInfo> RemoveTransaction(DuckTransaction &transaction, bool store_transaction,
 	                                              unique_ptr<DuckCleanupInfo> cleanup_info) noexcept;
-	//! Recompute lowest_visibility_bound over the active transactions, leaving out `exclude`, and
-	//! return its index among them (their count when absent). Caller holds the transaction lock
-	idx_t UpdateLowestVisibilityBound(optional_ptr<DuckTransaction> exclude) noexcept;
+	void AcquireLowest(VisibilityBound bound) noexcept;
+	void ReleaseLowest(VisibilityBound bound) noexcept;
+	void RecomputeLowest() noexcept;
+	ErrorData CommitReadOnly(ClientContext &context, DuckTransaction &transaction);
 	//! Move the committed transactions below the cleanup info's lowest visibility bound into it.
 	//! Caller holds the transaction lock; must not allocate (see CreateCleanupInfo)
 	void SweepCommittedTransactions(DuckCleanupInfo &cleanup_info) noexcept;
 	//! Hand a cleanup to the background cleanup thread, if it has anything to do
-	void QueueCleanup(unique_ptr<DuckCleanupInfo> cleanup_info);
+	unique_ptr<DuckCleanupInfo> QueueCleanup(unique_ptr<DuckCleanupInfo> cleanup_info);
 
 	//! Whether or not we can checkpoint
 	CheckpointDecision CanCheckpoint(DuckTransaction &transaction, unique_ptr<StorageLockKey> &checkpoint_lock,
@@ -155,8 +158,16 @@ private:
 	bool HasOtherTransactions(DuckTransaction &transaction);
 	void CleanupTransactions();
 
-	//! Whether a commit that needed a WAL sync is still in its commit path, possibly inside SyncUpTo
-	bool HasUnsyncedCommits();
+	struct UnsyncedCommit {
+		reference<DuckTransaction> transaction;
+		optional_ptr<WriteAheadLog> wal;
+		bool store_transaction;
+		optional_ptr<atomic<bool>> retired;
+	};
+	void RetireSyncedCommits(WriteAheadLog &wal, idx_t synced_offset) noexcept;
+	void RetireSyncedCommitsInternal(WriteAheadLog &wal, idx_t synced_offset);
+	bool EraseUnsyncedCommit(DuckTransaction &transaction);
+	void LeaveSyncWindow();
 	struct DurableSnapshot {
 		//! Every commit before this bound is durable
 		VisibilityBound visibility_bound = VisibilityBound::IncludingUncommitted();
@@ -174,6 +185,7 @@ private:
 	//! The lowest bound any active transaction reads at. A version preceding it is visible to
 	//! every active transaction, so whatever it supersedes can be cleaned up or compacted
 	atomic<VisibilityBound> lowest_visibility_bound;
+	idx_t lowest_holders = 0;
 	//! The last commit timestamp
 	atomic<transaction_t> last_commit;
 	//! The currently active checkpoint, zero when none is running
@@ -195,10 +207,9 @@ private:
 	//! Lock necessary to start transactions only - used by FORCE CHECKPOINT to prevent new transactions from starting
 	mutex start_transaction_lock;
 
-	//! Every commit before this bound is durable; it only ever advances. A transaction stays in
-	//! active_transactions until its commit is durable, so new snapshots are bounded below commits
-	//! that are not yet durable
-	VisibilityBound durable_bound;
+	vector<UnsyncedCommit> unsynced_commits;
+	vector<pair<const DuckTransaction *, bool>> retiring;
+	atomic<int32_t> sync_window {0};
 
 	atomic<idx_t> last_uncommitted_catalog_version = {TRANSACTION_ID_START};
 	atomic<idx_t> last_committed_version = {0};
