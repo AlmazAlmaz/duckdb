@@ -196,7 +196,6 @@ bool OptionIsExcludedFromTest(const string &name) {
 	    "disabled_filesystems",          // cant change this while db is running
 	    "duckdb_api",
 	    "enable_external_access", // cant change this while db is running
-	    "enable_object_cache",
 	    "enable_profiling",
 	    "enable_progress_bar",
 	    "enable_progress_bar_print",
@@ -211,7 +210,6 @@ bool OptionIsExcludedFromTest(const string &name) {
 	    "log_query_path",
 	    "max_execution_time",
 	    "max_streaming_buffer_size",
-	    "password",
 	    "profiling_mode",
 	    "profiling_output", // just an alias
 	    "profiling_renderer_settings",
@@ -224,8 +222,6 @@ bool OptionIsExcludedFromTest(const string &name) {
 	    "temp_file_encryption",
 	    "tracked_metrics",
 	    "transaction_isolation",
-	    "user",
-	    "username",
 	    "vacuum_rebuild_indexes", // cant change this while db is running
 	    "warnings_as_errors",     // requires logging to be enabled
 	    "worker_threads",
