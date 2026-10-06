@@ -48,6 +48,7 @@
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/write_ahead_log.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/logging/logger.hpp"
 #include <algorithm>
 
 namespace duckdb {
@@ -744,6 +745,20 @@ bool Catalog::CheckAmbiguousCatalogOrSchema(ClientContext &context, const Identi
 	return !!GetSchema(context, schema_lookup, OnEntryNotFound::RETURN_NULL);
 }
 
+static idx_t ListingRank(Catalog &catalog) {
+	if (!catalog.IsDuckCatalog()) {
+		return 2;
+	}
+	return catalog.Compatibility() == SqlCompatibility::POSTGRES ? 0 : 1;
+}
+
+static void LogSkippedListing(ClientContext &context, const string &what, const std::exception &ex) {
+	auto message = StringUtil::Format("catalog listing skipped %s: %s", what, ErrorData(ex).Message());
+	if (!context.EmitWarning(message.c_str())) {
+		DUCKDB_LOG_DEBUG(context, message);
+	}
+}
+
 //===--------------------------------------------------------------------===//
 // Lookup
 //===--------------------------------------------------------------------===//
@@ -756,6 +771,8 @@ vector<SimilarCatalogEntry> Catalog::SimilarEntriesInSchemas(ClientContext &cont
 		try {
 			auto transaction = schema.catalog.GetCatalogTransaction(context);
 			entry = schema.GetSimilarEntry(transaction, lookup_info);
+		} catch (const InterruptException &) {
+			throw;
 		} catch (const std::exception &) {
 			// Suggestions are best effort. Enumerating an attached remote catalog can
 			// fail on its own terms (loading table metadata, starting a transaction),
@@ -1005,7 +1022,11 @@ CatalogException Catalog::CreateMissingEntryException(CatalogEntryRetriever &ret
 
 	reference_set_t<SchemaCatalogEntry> unseen_schemas;
 	auto &db_manager = DatabaseManager::Get(context);
-	auto databases = db_manager.GetDatabases(context, max_schema_count);
+	auto databases = db_manager.GetDatabases(context);
+	std::stable_sort(databases.begin(), databases.end(),
+	                 [](const shared_ptr<AttachedDatabase> &left, const shared_ptr<AttachedDatabase> &right) {
+		                 return ListingRank(left->GetCatalog()) < ListingRank(right->GetCatalog());
+	                 });
 
 	auto default_database = DatabaseManager::TryGetDefaultDatabase(context);
 	identifier_set_t search_path_catalogs;
@@ -1020,8 +1041,14 @@ CatalogException Catalog::CreateMissingEntryException(CatalogEntryRetriever &ret
 		    (!database->GetCatalog().IsDuckCatalog() && !search_path_catalogs.count(database->GetName()))) {
 			continue;
 		}
-		auto &catalog = database->GetCatalog();
-		auto current_schemas = catalog.GetSchemas(context);
+		vector<reference<SchemaCatalogEntry>> current_schemas;
+		try {
+			current_schemas = database->GetCatalog().GetSchemas(context);
+		} catch (const InterruptException &) {
+			throw;
+		} catch (const std::exception &) {
+			continue;
+		}
 		for (auto &current_schema : current_schemas) {
 			if (unseen_schemas.size() >= max_schema_count) {
 				break;
@@ -1102,9 +1129,16 @@ CatalogException Catalog::CreateMissingEntryException(CatalogEntryRetriever &ret
 		for (auto &unseen_entry : unseen_entries) {
 			auto catalog_name = unseen_entry.schema->catalog.GetName();
 			auto schema_name = unseen_entry.schema->name;
-			bool qualify_database;
-			bool qualify_schema;
-			FindMinimalQualification(retriever, catalog_name, schema_name, qualify_database, qualify_schema);
+			bool qualify_database = true;
+			bool qualify_schema = true;
+			try {
+				FindMinimalQualification(retriever, catalog_name, schema_name, qualify_database, qualify_schema);
+			} catch (const InterruptException &) {
+				throw;
+			} catch (const std::exception &) {
+				qualify_database = true;
+				qualify_schema = true;
+			}
 			auto qualified_name = unseen_entry.GetQualifiedName(qualify_database, qualify_schema);
 			suggestions.insert(qualified_name);
 		}
@@ -1677,15 +1711,27 @@ Catalog::GetAllSchemas(ClientContext &context, bool include_hidden,
 		// Pin the database for the meta transaction: the returned schema (and downstream entry) references
 		// outlive this scope, and a catalog whose scan path starts no transaction (e.g. snapshot-backed
 		// catalogs) would otherwise be destroyed by a concurrent DETACH/DROP DATABASE mid-statement.
-		auto &db = meta_transaction.UseDatabase(database);
-		auto &catalog = db.GetCatalog();
-		auto new_schemas = catalog.GetSchemas(context);
+		vector<reference<SchemaCatalogEntry>> new_schemas;
+		try {
+			auto &db = meta_transaction.UseDatabase(database);
+			new_schemas = db.GetCatalog().GetSchemas(context);
+		} catch (const InterruptException &) {
+			throw;
+		} catch (const std::exception &ex) {
+			LogSkippedListing(context, StringUtil::Format("database \"%s\"", database->GetName()), ex);
+			continue;
+		}
 		result.insert(result.end(), new_schemas.begin(), new_schemas.end());
 	}
 	sort(result.begin(), result.end(),
 	     [&](reference<SchemaCatalogEntry> left_p, reference<SchemaCatalogEntry> right_p) {
 		     auto &left = left_p.get();
 		     auto &right = right_p.get();
+		     auto left_rank = ListingRank(left.catalog);
+		     auto right_rank = ListingRank(right.catalog);
+		     if (left_rank != right_rank) {
+			     return left_rank < right_rank;
+		     }
 		     if (left.catalog.GetName() < right.catalog.GetName()) {
 			     return true;
 		     }
@@ -1698,12 +1744,38 @@ Catalog::GetAllSchemas(ClientContext &context, bool include_hidden,
 	return result;
 }
 
+void Catalog::ScanListedEntries(ClientContext &context, SchemaCatalogEntry &schema, CatalogType type,
+                                const std::function<void(CatalogEntry &)> &callback) {
+	vector<reference<CatalogEntry>> entries;
+	try {
+		schema.Scan(context, type, [&](CatalogEntry &entry) { entries.push_back(entry); });
+	} catch (const InterruptException &) {
+		throw;
+	} catch (const std::exception &ex) {
+		LogSkippedListing(context, StringUtil::Format("schema \"%s\".\"%s\"", schema.catalog.GetName(), schema.name),
+		                  ex);
+		return;
+	}
+	for (auto &entry : entries) {
+		try {
+			callback(entry.get());
+		} catch (const InterruptException &) {
+			throw;
+		} catch (const std::exception &ex) {
+			LogSkippedListing(context,
+			                  StringUtil::Format("entry \"%s\".\"%s\".\"%s\"", schema.catalog.GetName(), schema.name,
+			                                     entry.get().name),
+			                  ex);
+		}
+	}
+}
+
 vector<reference<CatalogEntry>> Catalog::GetAllEntries(ClientContext &context, CatalogType catalog_type) {
 	vector<reference<CatalogEntry>> result;
 	auto schemas = GetAllSchemas(context);
 	for (const auto &schema_ref : schemas) {
-		auto &schema = schema_ref.get();
-		schema.Scan(context, catalog_type, [&](CatalogEntry &entry) { result.push_back(entry); });
+		ScanListedEntries(context, schema_ref.get(), catalog_type,
+		                  [&](CatalogEntry &entry) { result.push_back(entry); });
 	}
 	return result;
 }
