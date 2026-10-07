@@ -22,6 +22,7 @@ class DatabaseInstance;
 class StorageManager;
 class TransactionManager;
 class StorageExtension;
+struct StorageExtensionInfo;
 class DatabaseManager;
 class ResourceDeleter;
 
@@ -152,6 +153,9 @@ public:
 	optional_ptr<StorageExtension> GetStorageExtension() {
 		return storage_extension;
 	}
+	void HoldUntilClosed(shared_ptr<StorageExtensionInfo> state) {
+		held_until_closed = std::move(state);
+	}
 
 	const Identifier &GetName() const {
 		return name;
@@ -219,6 +223,7 @@ public:
 private:
 	DatabaseInstance &db;
 	ValidChecker validity;
+	shared_ptr<StorageExtensionInfo> held_until_closed;
 	unique_ptr<StoredDatabasePath> stored_database_path;
 	unique_ptr<StorageManager> storage;
 	unique_ptr<Catalog> catalog;
