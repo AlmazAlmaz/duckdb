@@ -397,4 +397,11 @@ struct WALCommitPrepared {
 	static WALCommitPrepared Deserialize(Deserializer &deserializer);
 };
 
+struct WALAdoptSegments {
+	vector<string> segments;
+
+	void Serialize(Serializer &serializer) const;
+	static WALAdoptSegments Deserialize(Deserializer &deserializer);
+};
+
 } // namespace duckdb

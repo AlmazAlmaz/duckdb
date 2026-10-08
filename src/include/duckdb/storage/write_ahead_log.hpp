@@ -15,10 +15,16 @@
 #include "duckdb/catalog/catalog_entry/table_macro_catalog_entry.hpp"
 #include "duckdb/common/enums/wal_type.hpp"
 #include "duckdb/common/serializer/buffered_file_writer.hpp"
+#include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/storage/block.hpp"
 
 #include <absl/functional/function_ref.h>
+
+namespace roaring::api {
+struct roaring_bitmap_s;
+typedef struct roaring_bitmap_s roaring_bitmap_t;
+} // namespace roaring::api
 
 namespace duckdb {
 
@@ -40,6 +46,37 @@ class WriteAheadLogDeserializer;
 struct PersistentCollectionData;
 
 enum class WALInitState { NO_WAL, UNINITIALIZED, UNINITIALIZED_REQUIRES_TRUNCATE, INITIALIZED };
+
+struct WALRowPositionGroup {
+	uint64_t segment = 0;
+	const ::roaring::api::roaring_bitmap_t *docs = nullptr;
+};
+
+struct WALRowPositionMap {
+	uint64_t target = 0;
+	uint32_t base = 0;
+	uint32_t rank_begin = 0;
+	uint32_t rank_end = 0;
+	const ::roaring::api::roaring_bitmap_t *mask = nullptr;
+};
+
+class WALEntryBuffer {
+public:
+	WALEntryBuffer(AttachedDatabase &database, idx_t capacity);
+
+	void WriteInsert(DataChunk &chunk);
+	void WriteTruncateTable();
+	void WriteAdoptSegments(vector<string> segments);
+	void WriteDeleteRowPositions(idx_t count, absl::FunctionRef<WALRowPositionGroup(idx_t)> groups);
+	void WriteRowPositionMaps(uint64_t source, idx_t count, absl::FunctionRef<WALRowPositionMap(idx_t)> maps);
+
+private:
+	friend class WriteAheadLog;
+
+	AttachedDatabase &database;
+	MemoryStream stream;
+	idx_t entry_count = 0;
+};
 
 //! The WriteAheadLog (WAL) is a log that is used to provide durability. Prior
 //! to committing a transaction it writes the changes the transaction made to
@@ -129,6 +166,7 @@ public:
 	void WriteInsert(DataChunk &chunk);
 	void WriteRowGroupData(const PersistentCollectionData &data);
 	void WriteDelete(DataChunk &chunk);
+	void WriteEntries(const WALEntryBuffer &entries);
 	//! Write a single (sub-) column update to the WAL. Chunk must be a pair of (COL, ROW_ID).
 	//! The column_path vector is a *path* towards a column within the table
 	//! i.e. if we have a table with a single column S STRUCT(A INT, B INT)

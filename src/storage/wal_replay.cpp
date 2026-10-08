@@ -42,6 +42,7 @@
 #include "duckdb/storage/table/column_data.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/delete_state.hpp"
+#include "duckdb/storage/table/table_log_storage.hpp"
 #include "duckdb/storage/wal_entry.hpp"
 #include "duckdb/storage/write_ahead_log.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
@@ -55,13 +56,15 @@
 #include "duckdb/main/database_manager.hpp"
 
 namespace duckdb {
-enum class WALReplayState { MAIN_WAL, CHECKPOINT_WAL };
+enum class WALReplayState { MAIN_WAL, CHECKPOINT_WAL, RETAINED_WAL };
 
 class ReplayState {
 public:
 	ReplayState(AttachedDatabase &db, ClientContext &context, WALReplayState replay_state_p)
 	    : db(db), context(context), catalog(db.GetCatalog()),
-	      table_storage(db.GetStorageManager().GetTableStorageLoad()), replay_state(replay_state_p) {
+	      table_storage(db.GetStorageManager().GetTableStorageLoad()),
+	      wal_generation(db.GetStorageManager().GetBlockManager().GetCheckpointIteration()),
+	      replay_state(replay_state_p) {
 	}
 
 	AttachedDatabase &db;
@@ -69,11 +72,13 @@ public:
 	reference<Catalog> catalog;
 	optional_ptr<DuckTableEntry> current_table;
 	optional_idx current_table_oid;
+	optional_ptr<TableLogStorage> current_log_table;
 	optional_ptr<TableStorageLoad> table_storage;
 	optional<hugeint_t> prepared_txid;
 	vector<pair<hugeint_t, vector<pair<idx_t, idx_t>>>> committed_prepared;
 	MetaBlockPointer checkpoint_id;
 	idx_t wal_version = 1;
+	idx_t wal_generation;
 	optional_idx current_position;
 	optional_idx checkpoint_position;
 	optional_idx checkpoint_end_position;
@@ -110,12 +115,18 @@ public:
 	      stream(nullptr, 0), deserializer(stream_p), deserialize_only(deserialize_only) {
 		deserializer.Set<Catalog &>(catalog);
 	}
-	WriteAheadLogDeserializer(ReplayState &state_p, unique_ptr<data_t[]> data_p, idx_t size, idx_t entry_offset_p,
+	WriteAheadLogDeserializer(ReplayState &state_p, std::shared_ptr<data_t> data_p, idx_t size, idx_t entry_offset_p,
 	                          bool deserialize_only = false)
 	    : state(state_p), db(state.db), context(state.context), catalog(state.catalog.get()), data(std::move(data_p)),
 	      stream(data.get(), size), deserializer(stream), deserialize_only(deserialize_only),
 	      entry_offset(entry_offset_p) {
 		deserializer.Set<Catalog &>(catalog);
+	}
+
+	static std::shared_ptr<data_t> AllocateEntry(idx_t size) {
+		static constexpr auto alignment = std::align_val_t {WAL_FROZEN_BITMAP_ALIGNMENT};
+		return std::shared_ptr<data_t>(static_cast<data_t *>(::operator new(size, alignment)),
+		                               [](data_t *entry) { ::operator delete(entry, alignment); });
 	}
 
 	static WriteAheadLogDeserializer GetEntryDeserializer(ReplayState &state_p, BufferedFileReader &stream,
@@ -140,7 +151,7 @@ public:
 			}
 
 			// allocate a buffer and read data into the buffer
-			auto buffer = unique_ptr<data_t[]>(new data_t[size]);
+			auto buffer = AllocateEntry(size);
 			stream.ReadData(buffer.get(), size);
 
 			// compute and verify the checksum
@@ -201,7 +212,7 @@ public:
 
 			//! Allocate a decryption buffer
 			auto buffer = unique_ptr<data_t[]>(new data_t[ciphertext_size]);
-			auto out_buffer = unique_ptr<data_t[]>(new data_t[size]);
+			auto out_buffer = AllocateEntry(size);
 
 			stream.ReadData(buffer.get(), ciphertext_size);
 			encryption_state->Process(buffer.get(), ciphertext_size, buffer.get(), ciphertext_size);
@@ -249,6 +260,9 @@ public:
 			deserializer.End();
 			return true;
 		}
+		if (state.replay_state == WALReplayState::RETAINED_WAL && !ReplaysRetained(wal_type)) {
+			deserialize_only = true;
+		}
 		if (CanSkipPayload(wal_type)) {
 			// Framed entries have already been read and integrity-checked, so jump directly to the root terminator.
 			D_ASSERT(stream.GetCapacity() >= sizeof(field_id_t));
@@ -276,6 +290,19 @@ public:
 
 protected:
 	void ReplayEntry(WALType wal_type);
+	static bool ReplaysRetained(WALType wal_type) {
+		switch (wal_type) {
+		case WALType::USE_TABLE:
+		case WALType::INSERT_TUPLE:
+		case WALType::TRUNCATE_TABLE:
+		case WALType::ADOPT_SEGMENTS:
+		case WALType::DELETE_ROW_POSITIONS:
+		case WALType::ROW_POSITION_MAPS:
+			return true;
+		default:
+			return false;
+		}
+	}
 	bool CanSkipPayload(WALType wal_type) const {
 		// Unframed WAL v1 entries must still be deserialized; Replay* guards suppress their side effects.
 		if (!deserialize_only || !data) {
@@ -307,6 +334,10 @@ protected:
 		case WALType::UPDATE_TUPLE:
 		case WALType::CREATE_TRIGGER:
 		case WALType::DROP_TRIGGER:
+		case WALType::TRUNCATE_TABLE:
+		case WALType::ADOPT_SEGMENTS:
+		case WALType::DELETE_ROW_POSITIONS:
+		case WALType::ROW_POSITION_MAPS:
 			return true;
 		default:
 			return false;
@@ -363,17 +394,23 @@ protected:
 	void ReplayRowGroupData();
 	void ReplayDelete();
 	void ReplayUpdate();
+	void ReplayTruncateTable();
+	void ReplayAdoptSegments();
+	void ReplayDeleteRowPositions();
+	void ReplayRowPositionMaps();
 	void ReplayCheckpoint();
 
 private:
 	void ReplayIndexData(IndexStorageInfo &info);
+	optional_ptr<TableLogStorage> LogTable(const char *what) const;
+	std::span<const data_t> ReadBitmap(field_id_t size_field, field_id_t bitmap_field, const char *tag);
 
 private:
 	ReplayState &state;
 	AttachedDatabase &db;
 	ClientContext &context;
 	Catalog &catalog;
-	unique_ptr<data_t[]> data;
+	std::shared_ptr<data_t> data;
 	MemoryStream stream;
 	BinaryDeserializer deserializer;
 	bool deserialize_only;
@@ -393,6 +430,10 @@ public:
 private:
 	unique_ptr<WriteAheadLog> ReplayLog(unique_ptr<FileHandle> handle,
 	                                    WALReplayState replay_state = WALReplayState::MAIN_WAL);
+	bool ReplaysRetained() const;
+	void ReplayRetained(ClientContext &replay_context, idx_t end);
+	void ReplayRetainedLog(ClientContext &replay_context, const string &path);
+	void RetireCheckpointedLog(ClientContext &replay_context, const string &wal_path);
 	void CopyOverWAL(BufferedFileReader &reader, FileHandle &target, data_ptr_t buffer, idx_t buffer_size,
 	                 idx_t copy_end);
 	void MergeIntoRecoveryWAL(Connection &con, const ReplayState &checkpoint_state, BufferedFileReader &main_wal_reader,
@@ -404,6 +445,7 @@ private:
 	AttachedDatabase &database;
 	const string &main_wal_path;
 	FileSystem &fs;
+	bool retained_replayed = false;
 };
 
 unique_ptr<WriteAheadLog> WriteAheadLog::Replay(QueryContext context, StorageManager &storage_manager,
@@ -420,21 +462,122 @@ WriteAheadLogReplayer::WriteAheadLogReplayer(QueryContext context, StorageManage
 
 unique_ptr<WriteAheadLog> WriteAheadLogReplayer::Replay() {
 	auto handle = fs.OpenFile(main_wal_path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS);
-	if (!handle) {
-		// WAL does not exist - instantiate an empty WAL
-		return make_uniq<WriteAheadLog>(storage_manager, main_wal_path);
+	auto replay_state = WALReplayState::MAIN_WAL;
+	if (!handle && ReplaysRetained()) {
+		auto checkpoint_wal = storage_manager.GetCheckpointWALPath();
+		handle = fs.OpenFile(checkpoint_wal, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS);
+		if (handle && !database.IsReadOnly()) {
+			handle.reset();
+			fs.MoveFile(checkpoint_wal, main_wal_path);
+			handle = fs.OpenFile(main_wal_path, FileFlags::FILE_FLAGS_READ);
+		}
+		replay_state = WALReplayState::CHECKPOINT_WAL;
 	}
-
-	// context is passed for metric collection purposes only!!
-	auto wal_handle = ReplayLog(std::move(handle));
+	unique_ptr<WriteAheadLog> wal_handle;
+	if (handle) {
+		// context is passed for metric collection purposes only!!
+		wal_handle = ReplayLog(std::move(handle), replay_state);
+		// replay returning NULL indicates we can nuke the WAL entirely - but only if this is not a read-only connection
+		if (!wal_handle && !storage_manager.GetAttached().IsReadOnly()) {
+			fs.TryRemoveFile(main_wal_path);
+		}
+	}
+	if (ReplaysRetained()) {
+		Connection con(database.GetDatabase());
+		con.BeginTransaction();
+		MetaTransaction::Get(*con.context).ModifyDatabase(database, DatabaseModificationType());
+		ReplayRetained(*con.context, storage_manager.GetBlockManager().GetCheckpointIteration());
+		con.Rollback();
+	}
 	if (wal_handle) {
 		return wal_handle;
 	}
-	// replay returning NULL indicates we can nuke the WAL entirely - but only if this is not a read-only connection
-	if (!storage_manager.GetAttached().IsReadOnly()) {
-		fs.TryRemoveFile(main_wal_path);
-	}
 	return make_uniq<WriteAheadLog>(storage_manager, main_wal_path);
+}
+
+bool WriteAheadLogReplayer::ReplaysRetained() const {
+	return !retained_replayed && !storage_manager.InMemory() && storage_manager.GetTableStorageLoad();
+}
+
+void WriteAheadLogReplayer::ReplayRetained(ClientContext &replay_context, idx_t end) {
+	if (!ReplaysRetained()) {
+		return;
+	}
+	retained_replayed = true;
+	auto start = end;
+	while (start > 0 && fs.FileExists(storage_manager.GetRetainedWALPath(start - 1))) {
+		start--;
+	}
+	storage_manager.SetRetainedWALStart(start < end ? optional_idx(start) : optional_idx());
+	for (auto generation = start; generation < end; generation++) {
+		ReplayRetainedLog(replay_context, storage_manager.GetRetainedWALPath(generation));
+	}
+}
+
+void WriteAheadLogReplayer::ReplayRetainedLog(ClientContext &replay_context, const string &path) {
+	auto &config = DBConfig::GetConfig(database.GetDatabase());
+	auto &db_manager = DatabaseManager::Get(database.GetDatabase());
+	BufferedFileReader reader(fs, fs.OpenFile(path, FileFlags::FILE_FLAGS_READ));
+	ReplayState scan_state(database, replay_context, WALReplayState::RETAINED_WAL);
+	unordered_set<idx_t> undecided_batches;
+	idx_t last_wal_flush_end = 0;
+	try {
+		idx_t batch_start = reader.CurrentOffset();
+		while (!reader.Finished()) {
+			auto deserializer = WriteAheadLogDeserializer::GetEntryDeserializer(scan_state, reader, true);
+			if (!deserializer.ReplayEntry()) {
+				continue;
+			}
+			if (scan_state.prepared_txid) {
+				if (!db_manager.IsPreparedCommitted(*scan_state.prepared_txid)) {
+					undecided_batches.insert(batch_start);
+				}
+				scan_state.prepared_txid.reset();
+			}
+			batch_start = reader.CurrentOffset();
+			last_wal_flush_end = reader.CurrentOffset();
+		}
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		if (config.options.abort_on_wal_failure || error.Type() != ExceptionType::SERIALIZATION) {
+			error.Throw("Failure while replaying WAL file \"" + path + "\": ");
+		}
+	}
+
+	auto &duck_manager = DuckTransactionManager::Get(database);
+	struct ReplayPositionGuard {
+		DuckTransactionManager &manager;
+		~ReplayPositionGuard() {
+			manager.ResetReplayPosition();
+		}
+	} replay_position_guard {duck_manager};
+
+	ReplayState state(database, replay_context, WALReplayState::RETAINED_WAL);
+	reader.Reset();
+	bool skip_batch = undecided_batches.contains(reader.CurrentOffset());
+	while (reader.CurrentOffset() < last_wal_flush_end) {
+		duck_manager.SetReplayPosition(state.wal_generation, reader.CurrentOffset());
+		auto deserializer = WriteAheadLogDeserializer::GetEntryDeserializer(state, reader, skip_batch);
+		if (deserializer.ReplayEntry()) {
+			state.prepared_txid.reset();
+			skip_batch = undecided_batches.contains(reader.CurrentOffset());
+		}
+	}
+}
+
+void WriteAheadLogReplayer::RetireCheckpointedLog(ClientContext &replay_context, const string &wal_path) {
+	auto generation = storage_manager.GetBlockManager().GetCheckpointIteration() - 1;
+	if (!ReplaysRetained() || !storage_manager.GetTableStorageLoad()->HasLogTables()) {
+		ReplayRetained(replay_context, generation + 1);
+		return;
+	}
+	if (database.IsReadOnly()) {
+		ReplayRetained(replay_context, generation);
+		ReplayRetainedLog(replay_context, wal_path);
+		return;
+	}
+	fs.MoveFile(wal_path, storage_manager.GetRetainedWALPath(generation));
+	ReplayRetained(replay_context, generation + 1);
 }
 
 void WriteAheadLogReplayer::CopyOverWAL(BufferedFileReader &reader, FileHandle &target, data_ptr_t buffer,
@@ -610,6 +753,8 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 			// no checkpoint WAL - either we just need to replay this WAL, or we are done
 			if (checkpoint_was_successful) {
 				// the contents of the WAL have already been checkpointed and there is no checkpoint WAL - we are done
+				reader.handle.reset();
+				RetireCheckpointedLog(*con.context, wal_path);
 				return nullptr;
 			}
 			if (!storage_manager.GetAttached().IsReadOnly()) {
@@ -622,6 +767,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 				// the main WAL is no longer needed, we only need to replay the checkpoint WAL
 				// if this is a read-only connection then replay the checkpoint WAL directly
 				if (storage_manager.GetAttached().IsReadOnly()) {
+					RetireCheckpointedLog(*con.context, wal_path);
 					return ReplayLog(std::move(checkpoint_handle), WALReplayState::CHECKPOINT_WAL);
 				}
 				// if this is not a read-only connection we need to finish the checkpoint
@@ -631,6 +777,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 				checkpoint_handle.reset();
 				reader.handle.reset();
 
+				RetireCheckpointedLog(*con.context, wal_path);
 				fs.MoveFile(checkpoint_wal, wal_path);
 
 				// now open the handle again and replay the checkpoint WAL
@@ -658,6 +805,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 		auto expected_id = checkpoint_state.expected_checkpoint_id.GetIndex();
 		WriteAheadLogDeserializer::ThrowVersionError(expected_id - 1, expected_id);
 	}
+	ReplayRetained(*con.context, storage_manager.GetBlockManager().GetCheckpointIteration());
 	unique_ptr<BufferedFileReader> truncated_wal_reader;
 	if (truncate_failed_checkpoint_marker) {
 		// The failed checkpoint marker is the logical end of the WAL and must not become writable again. Truncate to
@@ -693,12 +841,12 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 	ReplayState state(database, *con.context, replay_state);
 
 	auto &duck_manager = DuckTransactionManager::Get(database);
-	struct ReplayOffsetGuard {
+	struct ReplayPositionGuard {
 		DuckTransactionManager &manager;
-		~ReplayOffsetGuard() {
-			manager.ResetReplayCommitOffset();
+		~ReplayPositionGuard() {
+			manager.ResetReplayPosition();
 		}
-	} replay_offset_guard {duck_manager};
+	} replay_position_guard {duck_manager};
 
 	// reset the reader - we are going to read the WAL from the beginning again
 	auto &wal_reader = truncated_wal_reader ? *truncated_wal_reader : reader;
@@ -712,7 +860,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 	try {
 		bool skip_batch = undecided_batches.contains(wal_reader.CurrentOffset());
 		while (wal_reader.CurrentOffset() < last_wal_flush_end) {
-			duck_manager.SetReplayCommitOffset(wal_reader.CurrentOffset());
+			duck_manager.SetReplayPosition(state.wal_generation, wal_reader.CurrentOffset());
 			// read the current entry
 			auto deserializer = WriteAheadLogDeserializer::GetEntryDeserializer(state, wal_reader, skip_batch);
 			if (deserializer.ReplayEntry()) {
@@ -885,6 +1033,18 @@ void WriteAheadLogDeserializer::ReplayEntry(WALType entry_type) {
 	case WALType::COMMIT_PREPARED:
 		ReplayCommitPrepared();
 		break;
+	case WALType::TRUNCATE_TABLE:
+		ReplayTruncateTable();
+		break;
+	case WALType::ADOPT_SEGMENTS:
+		ReplayAdoptSegments();
+		break;
+	case WALType::DELETE_ROW_POSITIONS:
+		ReplayDeleteRowPositions();
+		break;
+	case WALType::ROW_POSITION_MAPS:
+		ReplayRowPositionMaps();
+		break;
 	default:
 		throw InternalException("Invalid WAL entry type!");
 	}
@@ -926,6 +1086,13 @@ void WriteAheadLogDeserializer::ReplayVersion() {
 
 	auto wal_checkpoint_iteration = checkpoint_iteration.GetIndex();
 	auto expected_checkpoint_iteration = single_file_block_manager.GetCheckpointIteration();
+	state.wal_generation = wal_checkpoint_iteration;
+	if (state.replay_state == WALReplayState::RETAINED_WAL) {
+		if (wal_checkpoint_iteration >= expected_checkpoint_iteration) {
+			ThrowVersionError(wal_checkpoint_iteration, expected_checkpoint_iteration);
+		}
+		return;
+	}
 	if (expected_checkpoint_iteration != wal_checkpoint_iteration) {
 		if (wal_checkpoint_iteration + 1 == expected_checkpoint_iteration) {
 			// this iteration is exactly one lower than the expected iteration
@@ -1606,7 +1773,14 @@ void WriteAheadLogDeserializer::ReplayUseTable() {
 	}
 	if (state.table_storage) {
 		state.current_table_oid = entry.table_oid;
-		state.current_table = state.table_storage->Find(entry.table_oid);
+		state.current_table = nullptr;
+		if (state.replay_state != WALReplayState::RETAINED_WAL) {
+			state.current_table = state.table_storage->Find(entry.table_oid);
+		}
+		state.current_log_table = nullptr;
+		if (!state.current_table) {
+			state.current_log_table = state.table_storage->FindLogStorage(entry.table_oid);
+		}
 		return;
 	}
 	state.current_table = &catalog.GetEntry<DuckTableEntry>(context, ReplayEntryName(catalog, entry.qualified_name));
@@ -1615,7 +1789,14 @@ void WriteAheadLogDeserializer::ReplayUseTable() {
 void WriteAheadLogDeserializer::ReplayInsert() {
 	DataChunk chunk;
 	deserializer.ReadObject(101, "chunk", [&](Deserializer &object) { chunk.Deserialize(object); });
-	if (DeserializeOnly() || (!state.current_table && state.table_storage)) {
+	if (DeserializeOnly()) {
+		return;
+	}
+	if (!state.current_table && state.current_log_table) {
+		state.current_log_table->ReplayInsert(context, chunk);
+		return;
+	}
+	if (!state.current_table && state.table_storage) {
 		return;
 	}
 	if (!state.current_table) {
@@ -1683,7 +1864,10 @@ void WriteAheadLogDeserializer::ReplayRowGroupData() {
 void WriteAheadLogDeserializer::ReplayDelete() {
 	DataChunk chunk;
 	deserializer.ReadObject(101, "chunk", [&](Deserializer &object) { chunk.Deserialize(object); });
-	if (DeserializeOnly() || (!state.current_table && state.table_storage)) {
+	if (DeserializeOnly()) {
+		return;
+	}
+	if (!state.current_table && state.table_storage) {
 		return;
 	}
 	if (!state.current_table) {
@@ -1730,6 +1914,81 @@ void WriteAheadLogDeserializer::ReplayUpdate() {
 
 	// now perform the update
 	state.current_table->GetStorage().UpdateColumn(*state.current_table, context, row_ids, column_path, chunk);
+}
+
+optional_ptr<TableLogStorage> WriteAheadLogDeserializer::LogTable(const char *what) const {
+	if (state.current_table) {
+		throw DataCorruptionException("Corrupt WAL: %s without a log table", what);
+	}
+	return state.current_log_table;
+}
+
+void WriteAheadLogDeserializer::ReplayTruncateTable() {
+	if (DeserializeOnly()) {
+		return;
+	}
+	if (auto log = LogTable("truncate")) {
+		log->ReplayTruncate();
+	}
+}
+
+void WriteAheadLogDeserializer::ReplayAdoptSegments() {
+	auto entry = WALAdoptSegments::Deserialize(deserializer);
+	if (DeserializeOnly()) {
+		return;
+	}
+	if (auto log = LogTable("segments")) {
+		log->ReplayAdoptSegments(std::move(entry.segments));
+	}
+}
+
+std::span<const data_t> WriteAheadLogDeserializer::ReadBitmap(const field_id_t size_field,
+                                                              const field_id_t bitmap_field, const char *tag) {
+	D_ASSERT(data);
+	const auto size = deserializer.ReadProperty<idx_t>(size_field, "size");
+	deserializer.OnPropertyBegin(bitmap_field, tag);
+	auto position = stream.GetPosition();
+	if (size != 0) {
+		position = AlignValue<idx_t>(position, WAL_FROZEN_BITMAP_ALIGNMENT);
+	}
+	D_ASSERT(position <= stream.GetCapacity() && size <= stream.GetCapacity() - position);
+	stream.SetPosition(position + size);
+	deserializer.OnPropertyEnd();
+	return {stream.GetData() + position, size};
+}
+
+void WriteAheadLogDeserializer::ReplayDeleteRowPositions() {
+	D_ASSERT(!DeserializeOnly());
+	vector<WALFrozenRowPositionGroup> groups;
+	deserializer.ReadList(101, "groups", [&](Deserializer::List &list, idx_t) {
+		list.ReadObject([&](Deserializer &object) {
+			auto &group = groups.emplace_back();
+			group.segment = object.ReadProperty<uint64_t>(100, "segment");
+			group.docs = ReadBitmap(101, 102, "docs");
+		});
+	});
+	if (auto log = LogTable("row position delete")) {
+		log->ReplayDeleteRowPositions(data, groups);
+	}
+}
+
+void WriteAheadLogDeserializer::ReplayRowPositionMaps() {
+	D_ASSERT(!DeserializeOnly());
+	const auto source = deserializer.ReadProperty<uint64_t>(101, "source");
+	vector<WALFrozenRowPositionMap> maps;
+	deserializer.ReadList(102, "maps", [&](Deserializer::List &list, idx_t) {
+		list.ReadObject([&](Deserializer &object) {
+			auto &map = maps.emplace_back();
+			map.target = object.ReadProperty<uint64_t>(100, "target");
+			map.base = object.ReadProperty<uint32_t>(101, "base");
+			map.rank_begin = object.ReadProperty<uint32_t>(102, "rank_begin");
+			map.rank_end = object.ReadProperty<uint32_t>(103, "rank_end");
+			map.mask = ReadBitmap(104, 105, "mask");
+		});
+	});
+	if (auto log = LogTable("row position maps")) {
+		log->ReplayRowPositionMaps(data, source, maps);
+	}
 }
 
 void WriteAheadLogDeserializer::ReplayCheckpoint() {

@@ -65,6 +65,10 @@ enum class WALType : uint8_t {
 	CREATE_FOREIGN_SERVER = 206,
 	DROP_FOREIGN_SERVER = 207,
 	USE_CATALOG = 208,
+	TRUNCATE_TABLE = 218,
+	ADOPT_SEGMENTS = 219,
+	DELETE_ROW_POSITIONS = 220,
+	ROW_POSITION_MAPS = 221,
 	// -----------------------------
 	// Flush
 	// -----------------------------

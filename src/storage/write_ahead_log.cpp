@@ -22,9 +22,12 @@
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/column_data.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
+#include "duckdb/storage/table/table_log_storage.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/wal_entry.hpp"
 #include "duckdb/main/attached_database.hpp"
+
+#include <roaring/roaring.h>
 
 namespace duckdb {
 
@@ -118,23 +121,55 @@ bool WriteAheadLog::Initialized() const {
 //===--------------------------------------------------------------------===//
 class ChecksumWriter : public WriteStream {
 public:
-	explicit ChecksumWriter(WriteAheadLog &wal) : wal(wal), memory_stream(Allocator::Get(wal.GetDatabase())) {
+	explicit ChecksumWriter(WriteAheadLog &wal)
+	    : database(wal.GetDatabase()), wal(&wal), memory_stream(Allocator::Get(database)) {
+	}
+	ChecksumWriter(AttachedDatabase &database, MemoryStream &target)
+	    : database(database), stream(&target), memory_stream(Allocator::Get(database)) {
+		if (!database.GetCatalog().Cast<DuckCatalog>().GetIsEncrypted()) {
+			direct = &target;
+			target.Write<uint64_t>(0);
+			target.Write<uint64_t>(0);
+			payload = &target;
+			payload_start = target.GetPosition();
+		}
 	}
 
 	void WriteData(const_data_ptr_t buffer, idx_t write_size) override {
-		// buffer data into the memory stream
-		memory_stream.WriteData(buffer, write_size);
+		payload->WriteData(buffer, write_size);
+	}
+
+	idx_t PayloadSize() const {
+		return payload->GetPosition() - payload_start;
+	}
+
+	data_ptr_t ReserveAligned(idx_t size, idx_t alignment) {
+		const auto position = PayloadSize();
+		const auto padding = AlignValue<idx_t>(position, alignment) - position;
+		payload->GrowCapacity(padding + size);
+		auto bytes = payload->GetData() + payload->GetPosition();
+		memset(bytes, 0, padding);
+		payload->SetPosition(payload->GetPosition() + padding + size);
+		return bytes + padding;
 	}
 
 	void Flush() {
+		if (direct) {
+			auto body = direct->GetData() + payload_start;
+			auto header = body - 2 * sizeof(uint64_t);
+			uint64_t size = PayloadSize();
+			Store<uint64_t>(size, header);
+			Store<uint64_t>(Checksum(body, size), header + sizeof(uint64_t));
+			return;
+		}
 		if (!stream) {
-			stream = wal.Initialize();
+			stream = wal->Initialize();
 		}
 
 		// if the config.encrypt WAL is true
 		// and if the attached database is encrypted
 		// then encrypt WAL before flushing
-		auto &catalog = wal.GetDatabase().GetCatalog().Cast<DuckCatalog>();
+		auto &catalog = database.GetCatalog().Cast<DuckCatalog>();
 
 		if (catalog.GetIsEncrypted()) {
 			return FlushEncrypted();
@@ -154,7 +189,7 @@ public:
 	}
 
 	void FlushEncrypted() {
-		auto &catalog = wal.GetDatabase().GetCatalog().Cast<DuckCatalog>();
+		auto &catalog = database.GetCatalog().Cast<DuckCatalog>();
 		auto encryption_key_id = catalog.GetEncryptionKeyId();
 
 		auto data = memory_stream.GetData();
@@ -163,7 +198,7 @@ public:
 		// compute the checksum over the entry
 		auto checksum = Checksum(data, size);
 
-		auto &db = wal.GetDatabase();
+		auto &db = database;
 		auto &keys = EncryptionKeyManager::Get(db.GetDatabase());
 		auto metadata = make_uniq<EncryptionStateMetadata>(db.GetStorageManager().GetCipher(),
 		                                                   MainHeader::DEFAULT_ENCRYPTION_KEY_LENGTH,
@@ -209,14 +244,18 @@ public:
 		memory_stream.Rewind();
 	}
 
-	WriteAheadLog &GetWAL() {
+	optional_ptr<WriteAheadLog> GetWAL() {
 		return wal;
 	}
 
 private:
-	WriteAheadLog &wal;
+	AttachedDatabase &database;
+	optional_ptr<WriteAheadLog> wal;
 	optional_ptr<WriteStream> stream;
 	MemoryStream memory_stream;
+	optional_ptr<MemoryStream> direct;
+	MemoryStream *payload = &memory_stream;
+	idx_t payload_start = 0;
 };
 
 class WriteAheadLogSerializer {
@@ -232,10 +271,18 @@ public:
 		serializer.WriteProperty(100, "wal_type", wal_type);
 	}
 
+	WriteAheadLogSerializer(AttachedDatabase &database, MemoryStream &stream, WALType wal_type)
+	    : checksum_writer(database, stream), serializer(checksum_writer, SerializationOptions(database)) {
+		serializer.Begin();
+		serializer.WriteProperty(100, "wal_type", wal_type);
+	}
+
 	void End() {
 		serializer.End();
 		checksum_writer.Flush();
-		checksum_writer.GetWAL().IncrementWALEntriesCount();
+		if (auto wal = checksum_writer.GetWAL()) {
+			wal->IncrementWALEntriesCount();
+		}
 	}
 
 	template <class T>
@@ -252,6 +299,24 @@ public:
 	template <class FUNC>
 	void WriteList(const field_id_t field_id, const char *tag, idx_t count, FUNC func) {
 		serializer.WriteList(field_id, tag, count, func);
+	}
+
+	void WriteBitmap(const field_id_t size_field, const field_id_t bitmap_field, const char *tag,
+	                 const ::roaring::api::roaring_bitmap_t *bitmap) {
+		const idx_t size = bitmap ? ::roaring::api::roaring_bitmap_frozen_size_in_bytes(bitmap) : 0;
+		serializer.WriteProperty(size_field, "size", size);
+		serializer.OnPropertyBegin(bitmap_field, tag);
+		if (size != 0) {
+			static constexpr auto alignment = std::align_val_t {WAL_FROZEN_BITMAP_ALIGNMENT};
+			const auto release = [](data_t *frozen) {
+				::operator delete(frozen, alignment);
+			};
+			std::unique_ptr<data_t, decltype(release)> frozen(static_cast<data_t *>(::operator new(size, alignment)),
+			                                                  release);
+			::roaring::api::roaring_bitmap_frozen_serialize(bitmap, char_ptr_cast(frozen.get()));
+			memcpy(checksum_writer.ReserveAligned(size, WAL_FROZEN_BITMAP_ALIGNMENT), frozen.get(), size);
+		}
+		serializer.OnPropertyEnd();
 	}
 
 private:
@@ -617,6 +682,77 @@ void WriteAheadLog::WriteDelete(DataChunk &chunk) {
 	WriteAheadLogSerializer serializer(*this, WALType::DELETE_TUPLE);
 	serializer.WriteProperty(101, "chunk", chunk);
 	serializer.End();
+}
+
+void WriteAheadLog::WriteEntries(const WALEntryBuffer &entries) {
+	if (entries.entry_count == 0) {
+		return;
+	}
+	auto &stream = Initialize();
+	WriteHeader();
+	stream.WriteData(entries.stream.GetData(), entries.stream.GetPosition());
+	for (idx_t i = 0; i < entries.entry_count; i++) {
+		IncrementWALEntriesCount();
+	}
+}
+
+WALEntryBuffer::WALEntryBuffer(AttachedDatabase &database, idx_t capacity)
+    : database(database), stream(Allocator::Get(database),
+                                 NextPowerOfTwo(MaxValue<idx_t>(capacity, MemoryStream::DEFAULT_INITIAL_CAPACITY))) {
+}
+
+void WALEntryBuffer::WriteInsert(DataChunk &chunk) {
+	D_ASSERT(chunk.size() > 0);
+	chunk.Verify(database.GetDatabase());
+
+	WriteAheadLogSerializer serializer(database, stream, WALType::INSERT_TUPLE);
+	serializer.WriteProperty(101, "chunk", chunk);
+	serializer.End();
+	entry_count++;
+}
+
+void WALEntryBuffer::WriteTruncateTable() {
+	WriteAheadLogSerializer serializer(database, stream, WALType::TRUNCATE_TABLE);
+	serializer.End();
+	entry_count++;
+}
+
+void WALEntryBuffer::WriteAdoptSegments(vector<string> segments) {
+	WriteAheadLogSerializer serializer(database, stream, WALType::ADOPT_SEGMENTS);
+	serializer.WriteEntry(WALAdoptSegments {std::move(segments)});
+	serializer.End();
+	entry_count++;
+}
+
+void WALEntryBuffer::WriteDeleteRowPositions(idx_t count, absl::FunctionRef<WALRowPositionGroup(idx_t)> groups) {
+	WriteAheadLogSerializer serializer(database, stream, WALType::DELETE_ROW_POSITIONS);
+	serializer.WriteList(101, "groups", count, [&](Serializer::List &list, idx_t i) {
+		const auto group = groups(i);
+		list.WriteObject([&](Serializer &object) {
+			object.WriteProperty(100, "segment", group.segment);
+			serializer.WriteBitmap(101, 102, "docs", group.docs);
+		});
+	});
+	serializer.End();
+	entry_count++;
+}
+
+void WALEntryBuffer::WriteRowPositionMaps(uint64_t source, idx_t count,
+                                          absl::FunctionRef<WALRowPositionMap(idx_t)> maps) {
+	WriteAheadLogSerializer serializer(database, stream, WALType::ROW_POSITION_MAPS);
+	serializer.WriteProperty(101, "source", source);
+	serializer.WriteList(102, "maps", count, [&](Serializer::List &list, idx_t i) {
+		const auto map = maps(i);
+		list.WriteObject([&](Serializer &object) {
+			object.WriteProperty(100, "target", map.target);
+			object.WriteProperty(101, "base", map.base);
+			object.WriteProperty(102, "rank_begin", map.rank_begin);
+			object.WriteProperty(103, "rank_end", map.rank_end);
+			serializer.WriteBitmap(104, 105, "mask", map.mask);
+		});
+	});
+	serializer.End();
+	entry_count++;
 }
 
 void WriteAheadLog::WriteUpdate(DataChunk &chunk, const vector<column_t> &column_indexes) {
