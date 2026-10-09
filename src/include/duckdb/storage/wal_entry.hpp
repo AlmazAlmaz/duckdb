@@ -421,6 +421,8 @@ struct WALReplicationLsn {
 	idx_t oid = 0;
 	CatalogType type = CatalogType::SUBSCRIPTION_ENTRY;
 	bool assign = false;
+	//! The sync id of a relation whose initial synchronization the LSN finishes, or 0 for the entry's own LSN
+	idx_t relation = 0;
 
 	void Serialize(Serializer &serializer) const;
 	static WALReplicationLsn Deserialize(Deserializer &deserializer);

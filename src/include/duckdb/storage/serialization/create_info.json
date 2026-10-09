@@ -884,6 +884,11 @@
         "id": 103,
         "name": "lsn",
         "type": "uint64_t"
+      },
+      {
+        "id": 104,
+        "name": "sync_id",
+        "type": "idx_t"
       }
     ],
     "pointer_type": "none"

@@ -14,4 +14,18 @@ void ReplicationLsnEntry::RaiseRemoteLsn(uint64_t lsn) {
 	}
 }
 
+void ReplicationLsnEntry::MarkRelationSynced(idx_t relation, uint64_t lsn) {
+	lock_guard<mutex> guard(lsn_state->relation_lock);
+	lsn_state->relation_lsns[relation] = lsn;
+}
+
+optional<uint64_t> ReplicationLsnEntry::RelationSyncedLsn(idx_t relation) const {
+	lock_guard<mutex> guard(lsn_state->relation_lock);
+	auto entry = lsn_state->relation_lsns.find(relation);
+	if (entry == lsn_state->relation_lsns.end()) {
+		return nullopt;
+	}
+	return entry->second;
+}
+
 } // namespace duckdb

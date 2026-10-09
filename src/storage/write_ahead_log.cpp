@@ -553,9 +553,9 @@ void WriteAheadLog::WriteDropReplicationOrigin(const InCatalogEntry &entry) {
 	serializer.End();
 }
 
-void WriteAheadLog::WriteReplicationLsn(const InCatalogEntry &entry, uint64_t remote_lsn, bool assign) {
+void WriteAheadLog::WriteReplicationLsn(const InCatalogEntry &entry, uint64_t remote_lsn, bool assign, idx_t relation) {
 	WriteAheadLogSerializer serializer(*this, WALType::REPLICATION_LSN);
-	serializer.WriteEntry(WALReplicationLsn {entry.name, remote_lsn, entry.oid, entry.type, assign});
+	serializer.WriteEntry(WALReplicationLsn {entry.name, remote_lsn, entry.oid, entry.type, assign, relation});
 	serializer.End();
 }
 

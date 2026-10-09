@@ -1557,7 +1557,9 @@ void WriteAheadLogDeserializer::ReplayReplicationLsn() {
 		return;
 	}
 	auto &progress = target->Cast<ReplicationLsnEntry>();
-	if (entry.assign) {
+	if (entry.relation != 0) {
+		progress.MarkRelationSynced(entry.relation, entry.remote_lsn);
+	} else if (entry.assign) {
 		progress.AssignRemoteLsn(entry.remote_lsn);
 	} else {
 		progress.RaiseRemoteLsn(entry.remote_lsn);

@@ -214,19 +214,31 @@ void DuckTransaction::ForgetReplicationLsn(ReplicationLsnEntry &entry) {
 	replication_lsns.erase(entry);
 }
 
+void DuckTransaction::PushRelationSync(ReplicationLsnEntry &entry, idx_t relation, uint64_t remote_lsn) {
+	if (!entry.ParentCatalog().UsesCatalogLog()) {
+		throw InternalException("%s synchronized without a catalog log", entry.name);
+	}
+	D_ASSERT(relation != 0);
+	lock_guard<mutex> l(replication_lock);
+	relation_syncs.push_back(RelationSync {entry, relation, remote_lsn});
+}
+
 bool DuckTransaction::HasReplicationLsns() {
 	lock_guard<mutex> l(replication_lock);
-	return !replication_lsns.empty();
+	return !replication_lsns.empty() || !relation_syncs.empty();
 }
 
 void DuckTransaction::WriteReplicationLsns(WriteAheadLog &catalog_log) {
 	lock_guard<mutex> l(replication_lock);
-	if (replication_lsns.empty()) {
+	if (replication_lsns.empty() && relation_syncs.empty()) {
 		return;
 	}
 	catalog_log.WriteUseCatalog(manager.GetDB().oid);
 	for (auto &entry : replication_lsns) {
 		catalog_log.WriteReplicationLsn(entry.first.get(), entry.second.remote_lsn, entry.second.assign);
+	}
+	for (auto &sync : relation_syncs) {
+		catalog_log.WriteReplicationLsn(sync.entry.get(), sync.remote_lsn, false, sync.relation);
 	}
 }
 
@@ -238,6 +250,9 @@ void DuckTransaction::ApplyReplicationLsns() {
 		} else {
 			entry.first.get().RaiseRemoteLsn(entry.second.remote_lsn);
 		}
+	}
+	for (auto &sync : relation_syncs) {
+		sync.entry.get().MarkRelationSynced(sync.relation, sync.remote_lsn);
 	}
 }
 

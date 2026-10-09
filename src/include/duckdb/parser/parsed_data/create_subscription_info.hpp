@@ -17,9 +17,12 @@ struct SubscriptionRelation {
 	string table;
 	uint8_t state = 'i';
 	uint64_t lsn = 0;
+	//! Names this relation's initial synchronization in the subscription's shared state
+	idx_t sync_id = 0;
 
 	bool operator==(const SubscriptionRelation &other) const {
-		return schema == other.schema && table == other.table && state == other.state && lsn == other.lsn;
+		return schema == other.schema && table == other.table && state == other.state && lsn == other.lsn &&
+		       sync_id == other.sync_id;
 	}
 
 	void Serialize(Serializer &serializer) const;

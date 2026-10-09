@@ -736,6 +736,11 @@
         "id": 105,
         "name": "assign",
         "type": "bool"
+      },
+      {
+        "id": 106,
+        "name": "relation",
+        "type": "idx_t"
       }
     ]
   },
