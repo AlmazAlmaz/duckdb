@@ -6,7 +6,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/valid_checker.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
-#include "duckdb/catalog/catalog_entry/subscription_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/replication_lsn_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/parser/column_definition.hpp"
@@ -191,35 +191,53 @@ void DuckTransaction::CoverSequenceUsage() {
 	}
 }
 
-void DuckTransaction::PushSubscriptionLsn(SubscriptionCatalogEntry &subscription, uint64_t remote_lsn) {
-	if (!subscription.ParentCatalog().UsesCatalogLog()) {
-		throw InternalException("Subscription %s advanced without a catalog log", subscription.name);
+void DuckTransaction::PushReplicationLsn(ReplicationLsnEntry &entry, uint64_t remote_lsn) {
+	if (!entry.ParentCatalog().UsesCatalogLog()) {
+		throw InternalException("%s advanced without a catalog log", entry.name);
 	}
-	lock_guard<mutex> l(subscription_lock);
-	auto entry = subscription_lsns.emplace(subscription, remote_lsn);
-	entry.first->second = MaxValue(entry.first->second, remote_lsn);
+	lock_guard<mutex> l(replication_lock);
+	auto result = replication_lsns.emplace(entry, ReplicationLsnUpdate {remote_lsn, false});
+	auto &update = result.first->second;
+	update.remote_lsn = update.assign ? remote_lsn : MaxValue(update.remote_lsn, remote_lsn);
 }
 
-bool DuckTransaction::HasSubscriptionLsns() {
-	lock_guard<mutex> l(subscription_lock);
-	return !subscription_lsns.empty();
+void DuckTransaction::AssignReplicationLsn(ReplicationLsnEntry &entry, uint64_t remote_lsn) {
+	if (!entry.ParentCatalog().UsesCatalogLog()) {
+		throw InternalException("%s advanced without a catalog log", entry.name);
+	}
+	lock_guard<mutex> l(replication_lock);
+	replication_lsns.insert_or_assign(entry, ReplicationLsnUpdate {remote_lsn, true});
 }
 
-void DuckTransaction::WriteSubscriptionLsns(WriteAheadLog &catalog_log) {
-	lock_guard<mutex> l(subscription_lock);
-	if (subscription_lsns.empty()) {
+void DuckTransaction::ForgetReplicationLsn(ReplicationLsnEntry &entry) {
+	lock_guard<mutex> l(replication_lock);
+	replication_lsns.erase(entry);
+}
+
+bool DuckTransaction::HasReplicationLsns() {
+	lock_guard<mutex> l(replication_lock);
+	return !replication_lsns.empty();
+}
+
+void DuckTransaction::WriteReplicationLsns(WriteAheadLog &catalog_log) {
+	lock_guard<mutex> l(replication_lock);
+	if (replication_lsns.empty()) {
 		return;
 	}
 	catalog_log.WriteUseCatalog(manager.GetDB().oid);
-	for (auto &entry : subscription_lsns) {
-		catalog_log.WriteSubscriptionLsn(entry.first.get(), entry.second);
+	for (auto &entry : replication_lsns) {
+		catalog_log.WriteReplicationLsn(entry.first.get(), entry.second.remote_lsn, entry.second.assign);
 	}
 }
 
-void DuckTransaction::RaiseSubscriptionLsns() {
-	lock_guard<mutex> l(subscription_lock);
-	for (auto &entry : subscription_lsns) {
-		entry.first.get().RaiseRemoteLsn(entry.second);
+void DuckTransaction::ApplyReplicationLsns() {
+	lock_guard<mutex> l(replication_lock);
+	for (auto &entry : replication_lsns) {
+		if (entry.second.assign) {
+			entry.first.get().AssignRemoteLsn(entry.second.remote_lsn);
+		} else {
+			entry.first.get().RaiseRemoteLsn(entry.second.remote_lsn);
+		}
 	}
 }
 

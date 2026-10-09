@@ -401,13 +401,29 @@ struct WALDropSubscription {
 	static WALDropSubscription Deserialize(Deserializer &deserializer);
 };
 
-struct WALSubscriptionLsn {
+struct WALCreateReplicationOrigin {
+	unique_ptr<CreateInfo> origin;
+
+	void Serialize(Serializer &serializer) const;
+	static WALCreateReplicationOrigin Deserialize(Deserializer &deserializer);
+};
+
+struct WALDropReplicationOrigin {
+	Identifier name;
+
+	void Serialize(Serializer &serializer) const;
+	static WALDropReplicationOrigin Deserialize(Deserializer &deserializer);
+};
+
+struct WALReplicationLsn {
 	Identifier name;
 	uint64_t remote_lsn = 0;
 	idx_t oid = 0;
+	CatalogType type = CatalogType::SUBSCRIPTION_ENTRY;
+	bool assign = false;
 
 	void Serialize(Serializer &serializer) const;
-	static WALSubscriptionLsn Deserialize(Deserializer &deserializer);
+	static WALReplicationLsn Deserialize(Deserializer &deserializer);
 };
 
 struct WALUseCatalog {

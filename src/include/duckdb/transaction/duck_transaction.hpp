@@ -24,7 +24,7 @@ class RowVersionManager;
 class DuckTransactionManager;
 class StorageLockKey;
 class StorageCommitState;
-class SubscriptionCatalogEntry;
+class ReplicationLsnEntry;
 struct UndoBufferProperties;
 
 struct CommitInfo {
@@ -104,10 +104,14 @@ public:
 	bool HasLoggedSequenceUsage();
 	void CoverSequenceUsage();
 	vector<SequenceValue> ReserveSequenceUsage(WriteAheadLog &catalog_log);
-	void PushSubscriptionLsn(SubscriptionCatalogEntry &subscription, uint64_t remote_lsn);
-	bool HasSubscriptionLsns();
-	void WriteSubscriptionLsns(WriteAheadLog &catalog_log);
-	void RaiseSubscriptionLsns();
+	//! Raises the entry's remote LSN to at least remote_lsn when the transaction commits
+	void PushReplicationLsn(ReplicationLsnEntry &entry, uint64_t remote_lsn);
+	//! Sets the entry's remote LSN to remote_lsn when the transaction commits, even if that moves it back
+	void AssignReplicationLsn(ReplicationLsnEntry &entry, uint64_t remote_lsn);
+	void ForgetReplicationLsn(ReplicationLsnEntry &entry);
+	bool HasReplicationLsns();
+	void WriteReplicationLsns(WriteAheadLog &catalog_log);
+	void ApplyReplicationLsns();
 	void PushAppend(DuckTableEntry &table_entry, idx_t row_start, idx_t row_count);
 	UndoBufferReference CreateUpdateInfo(DuckTableEntry &table_entry, idx_t type_size, idx_t entries,
 	                                     idx_t row_group_start);
@@ -157,8 +161,12 @@ private:
 	mutex sequence_lock;
 	reference_map_t<SequenceCatalogEntry, reference<SequenceValue>> sequence_usage;
 	reference_map_t<SequenceCatalogEntry, uint64_t> logged_sequence_usage;
-	mutex subscription_lock;
-	reference_map_t<SubscriptionCatalogEntry, uint64_t> subscription_lsns;
+	struct ReplicationLsnUpdate {
+		uint64_t remote_lsn;
+		bool assign;
+	};
+	mutex replication_lock;
+	reference_map_t<ReplicationLsnEntry, ReplicationLsnUpdate> replication_lsns;
 	//! Flag to prevent auto-checkpointing inside a checkpoint transaction.
 	bool is_checkpoint_transaction = false;
 };
