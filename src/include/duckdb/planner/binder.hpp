@@ -77,7 +77,6 @@ struct CreateSchemaInfo;
 struct CreateTriggerInfo;
 struct QualifiedName;
 struct BoundCreateTableInfo;
-struct BoundOnConflictInfo;
 struct CommonTableExpressionInfo;
 struct BoundParameterMap;
 struct BoundPragmaInfo;
