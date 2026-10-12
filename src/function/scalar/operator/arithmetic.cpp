@@ -21,6 +21,7 @@
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/function/scalar/operators.hpp"
 #include "duckdb/function/scalar/operator_functions.hpp"
+#include "duckdb/function/scalar/overflow_check_function.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -493,7 +494,7 @@ ScalarFunction AddFunction::GetFunction(const LogicalType &left_type, const Logi
 			return function;
 		} else if (left_type.IsIntegral()) {
 			ScalarFunction function("+", {left_type, right_type}, left_type,
-			                        GetScalarIntegerFunction<AddOperatorOverflowCheck>(left_type.InternalType()),
+			                        GetOverflowCheckFunction<AddOperatorOverflowCheck>(left_type.InternalType()),
 			                        nullptr,
 			                        PropagateNumericStats<TryAddOperator, AddPropagateStatistics, AddOperator>);
 			function.SetFallible();
@@ -798,6 +799,55 @@ static unique_ptr<FunctionData> IntegerNegateBind(BindScalarFunctionInput &input
 	return nullptr;
 }
 
+template <class T>
+static T NegateWrapping(T value) {
+	if constexpr (std::is_same_v<T, hugeint_t> || std::is_same_v<T, uhugeint_t>) {
+		return -value;
+	} else {
+		using UNSIGNED = std::make_unsigned_t<T>;
+		return static_cast<T>(static_cast<UNSIGNED>(0) - static_cast<UNSIGNED>(value));
+	}
+}
+
+template <class T>
+static void IntegerNegateFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	bool overflow = false;
+	UnaryExecutor::Execute<T, T>(input.data[0], result, [&overflow](T value) {
+		overflow |= !NegateOperator::CanNegate<T>(value);
+		return NegateWrapping(value);
+	});
+	if (overflow && !IntegerOverflowWraps(state)) {
+		throw OutOfRangeException("Overflow in negation of numeric value!");
+	}
+}
+
+static scalar_function_t GetNegateFunction(const LogicalType &type) {
+	switch (type.InternalType()) {
+	case PhysicalType::INT8:
+		return IntegerNegateFunction<int8_t>;
+	case PhysicalType::INT16:
+		return IntegerNegateFunction<int16_t>;
+	case PhysicalType::INT32:
+		return IntegerNegateFunction<int32_t>;
+	case PhysicalType::INT64:
+		return IntegerNegateFunction<int64_t>;
+	case PhysicalType::INT128:
+		return IntegerNegateFunction<hugeint_t>;
+	case PhysicalType::UINT8:
+		return IntegerNegateFunction<uint8_t>;
+	case PhysicalType::UINT16:
+		return IntegerNegateFunction<uint16_t>;
+	case PhysicalType::UINT32:
+		return IntegerNegateFunction<uint32_t>;
+	case PhysicalType::UINT64:
+		return IntegerNegateFunction<uint64_t>;
+	case PhysicalType::UINT128:
+		return IntegerNegateFunction<uhugeint_t>;
+	default:
+		return ScalarFunction::GetScalarUnaryFunction<NegateOperator>(type);
+	}
+}
+
 ScalarFunction SubtractFunction::GetFunction(const LogicalType &type) {
 	if (type.id() == LogicalTypeId::INTERVAL) {
 		ScalarFunction func("-", {type}, type, ScalarFunction::UnaryFunction<interval_t, interval_t, NegateOperator>);
@@ -814,8 +864,7 @@ ScalarFunction SubtractFunction::GetFunction(const LogicalType &type) {
 		return func;
 	} else {
 		D_ASSERT(type.IsNumeric());
-		ScalarFunction func("-", {type}, type, ScalarFunction::GetScalarUnaryFunction<NegateOperator>(type),
-		                    IntegerNegateBind);
+		ScalarFunction func("-", {type}, type, GetNegateFunction(type), IntegerNegateBind);
 		func.SetFallible();
 		func.SetUnaryArgProperties(ArgProperties().StrictlyDecreasing());
 		return func;
@@ -836,7 +885,7 @@ ScalarFunction SubtractFunction::GetFunction(const LogicalType &left_type, const
 		} else if (left_type.IsIntegral()) {
 			ScalarFunction function(
 			    "-", {left_type, right_type}, left_type,
-			    GetScalarIntegerFunction<SubtractOperatorOverflowCheck>(left_type.InternalType()), nullptr,
+			    GetOverflowCheckFunction<SubtractOperatorOverflowCheck>(left_type.InternalType()), nullptr,
 			    PropagateNumericStats<TrySubtractOperator, SubtractPropagateStatistics, SubtractOperator>);
 			function.SetFallible();
 			function.SetArgProperties({ArgProperties().StrictlyIncreasing(), ArgProperties().StrictlyDecreasing()});
@@ -1099,7 +1148,7 @@ ScalarFunctionSet OperatorMultiplyFun::GetFunctions() {
 			multiply.AddFunction(function);
 		} else if (TypeIsIntegral(type.InternalType())) {
 			multiply.AddFunction(ScalarFunction(
-			    {type, type}, type, GetScalarIntegerFunction<MultiplyOperatorOverflowCheck>(type.InternalType()),
+			    {type, type}, type, GetOverflowCheckFunction<MultiplyOperatorOverflowCheck>(type.InternalType()),
 			    nullptr, PropagateNumericStats<TryMultiplyOperator, MultiplyPropagateStatistics, MultiplyOperator>));
 		} else if (type.IsFloating()) {
 			multiply.AddFunction(ScalarFunction({type, type}, type,
