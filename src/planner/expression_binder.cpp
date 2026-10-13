@@ -79,9 +79,14 @@ StackChecker<ExpressionBinder> ExpressionBinder::StackCheck(const ParsedExpressi
 }
 
 BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression) {
+	static constexpr idx_t INTERRUPT_INTERVAL = 256;
 	auto stack_checker = StackCheck(*expr);
 	SDB_IF_FAILURE("slow_expression_bind") {
 		absl::SleepFor(absl::Milliseconds(1));
+	}
+	if (++binds_since_interrupt_check >= INTERRUPT_INTERVAL) {
+		binds_since_interrupt_check = 0;
+		context.InterruptCheck();
 	}
 
 	auto &expr_ref = *expr;

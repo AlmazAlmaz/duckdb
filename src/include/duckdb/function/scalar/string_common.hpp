@@ -39,6 +39,7 @@ inline idx_t FirstNonAscii(const char *input, idx_t n) {
 
 //! Decodes one codepoint and returns its length - throws an InternalException on invalid UTF-8
 idx_t DecodeCodepoint(const char *input, idx_t size, int32_t &codepoint);
+void FillRepeated(ExpressionState &state, char *data, idx_t unit_size, idx_t size);
 idx_t LowerLength(const char *input_data, idx_t input_length);
 idx_t LowerCase(const char *input_data, idx_t input_length, char *result_data, idx_t result_capacity);
 idx_t FindStrInStr(const string_t &haystack_s, const string_t &needle_s);

@@ -51,10 +51,9 @@ struct ReduceExecuteInfo {
 		input_types.push_back(info.child_vector->GetType());
 		input_types.push_back(info.lambda_expr->GetReturnType());
 
-		// info.column_infos includes the list column plus captured args (and the initial value if present).
 		// skip the first entry if there is an initial value
-		for (idx_t i = info.has_initial ? 1 : 0; i < info.column_infos.size(); i++) {
-			input_types.push_back(info.column_infos[i].vector.get().GetType());
+		for (idx_t i = info.has_initial ? 1 : 0; i < info.columns.size(); i++) {
+			input_types.push_back(info.columns[i].GetType());
 		}
 
 		accumulator_cast = make_uniq<Vector>(info.lambda_expr->GetReturnType(), info.row_count);
@@ -128,7 +127,7 @@ bool ExecuteReduce(const idx_t loops, ReduceExecuteInfo &execute_info, LambdaFun
 			           loops_offset == 0) {
 				// If the list is empty and there is an initial value, use the initial value
 				execute_info.active_rows.SetInvalid(original_row_idx);
-				auto val = info.column_infos[0].vector.get().GetValue(original_row_idx);
+				auto val = info.columns[0].GetValue(original_row_idx);
 				info.result.SetValue(original_row_idx, val);
 			} else {
 				// If the list has no more entries, write the result
@@ -165,8 +164,8 @@ bool ExecuteReduce(const idx_t loops, ReduceExecuteInfo &execute_info, LambdaFun
 	}
 
 	if (loops == 0 && info.has_initial) {
-		info.column_infos[0].vector.get().Slice(execute_info.active_rows_sel, reduced_row_idx);
-		auto &initial_vector = info.column_infos[0].vector.get();
+		info.columns[0].Slice(execute_info.active_rows_sel, reduced_row_idx);
+		auto &initial_vector = info.columns[0];
 		ReferenceAccumulator(execute_info, input_chunk.data[accumulator_offset], initial_vector, reduced_row_idx, true);
 	} else {
 		ReferenceAccumulator(execute_info, input_chunk.data[accumulator_offset], *execute_info.left_slice,
@@ -178,14 +177,13 @@ bool ExecuteReduce(const idx_t loops, ReduceExecuteInfo &execute_info, LambdaFun
 	// skip the initial value if there is one
 	vector<Vector> slices;
 	const idx_t initial_offset = info.has_initial ? 1 : 0;
-	for (idx_t i = 0; i < info.column_infos.size() - initial_offset; i++) {
-		if (info.column_infos[initial_offset + i].vector.get().GetVectorType() == VectorType::CONSTANT_VECTOR) {
+	for (idx_t i = 0; i < info.columns.size() - initial_offset; i++) {
+		if (info.columns[initial_offset + i].GetVectorType() == VectorType::CONSTANT_VECTOR) {
 			// only reference constant vectors
-			input_chunk.data[accumulator_offset + 1 + i].Reference(info.column_infos[initial_offset + i].vector);
+			input_chunk.data[accumulator_offset + 1 + i].Reference(info.columns[initial_offset + i]);
 		} else {
 			// slice the other vectors
-			slices.emplace_back(info.column_infos[initial_offset + i].vector, execute_info.active_rows_sel,
-			                    reduced_row_idx);
+			slices.emplace_back(info.columns[initial_offset + i], execute_info.active_rows_sel, reduced_row_idx);
 			input_chunk.data[accumulator_offset + 1 + i].Reference(slices.back());
 		}
 	}
@@ -253,17 +251,23 @@ unique_ptr<FunctionData> ListReduceBind(BindScalarFunctionInput &input) {
 	auto has_index = bound_lambda_expr.ParameterCount() == 3;
 
 	const auto lambda_return_type = bound_lambda_expr.LambdaExpr()->GetReturnType();
-	auto cast_lambda_expr =
-	    BoundCastExpression::AddCastToType(context, std::move(bound_lambda_expr.LambdaExprMutable()), accumulator_type);
-	if (!cast_lambda_expr) {
-		throw BinderException("Could not cast lambda return type %s to accumulator type %s",
-		                      lambda_return_type.ToString(), accumulator_type.ToString());
+	if (lambda_return_type != accumulator_type) {
+		auto cast_lambda_expr =
+		    BoundCastExpression::AddCastToType(context, bound_lambda_expr.LambdaExpr()->Copy(), accumulator_type);
+		if (!cast_lambda_expr) {
+			throw BinderException("Could not cast lambda return type %s to accumulator type %s",
+			                      lambda_return_type.ToString(), accumulator_type.ToString());
+		}
+		// cast in place, so that the bound lambda expression stays intact as a child of the function
+		bound_lambda_expr.SetLambdaExpr(std::move(cast_lambda_expr));
 	}
-	// cast in place, so that the bound lambda expression stays intact as a child of the function
-	bound_lambda_expr.LambdaExprMutable() = std::move(cast_lambda_expr);
 	bound_function.SetReturnType(bound_lambda_expr.LambdaExpr()->GetReturnType());
-	return make_uniq<ListLambdaBindData>(bound_function.GetReturnType(), bound_lambda_expr.LambdaExpr()->Copy(),
-	                                     has_index, has_initial);
+	auto reduce_bind_data = make_uniq<ListLambdaBindData>(bound_function.GetReturnType(),
+	                                                      bound_lambda_expr.SharedLambdaExpr(), has_index, has_initial);
+	if (reduce_bind_data->is_volatile) {
+		bound_function.SetVolatile();
+	}
+	return std::move(reduce_bind_data);
 }
 
 LogicalType BindReduceChildren(ClientContext &context, const vector<LogicalType> &function_child_types,

@@ -21,6 +21,8 @@ namespace duckdb {
 
 namespace {
 
+constexpr idx_t LIST_AGGREGATES_CHECK_ELEMENTS = 1 << 20;
+
 struct ListAggregatesArena final : public AuxiliaryDataHolder {
 	explicit ListAggregatesArena(Allocator &allocator) : arena_allocator(allocator) {
 	}
@@ -183,13 +185,14 @@ struct FinalizeGenericValueFunctor {
 
 struct AggregateFunctor {
 	template <class OP, class T, class MAP_TYPE = sql_value_map_t<T, idx_t>>
-	static void ListExecuteFunction(Vector &result, const Vector &state_vector, idx_t count) {
+	static void ListExecuteFunction(Vector &result, const Vector &state_vector, idx_t count, ExpressionState &state) {
 	}
 };
 
 struct DistinctFunctor {
 	template <class OP, class T, class MAP_TYPE = sql_value_map_t<T, idx_t>>
-	static void ListExecuteFunction(Vector &result, const Vector &state_vector, idx_t count) {
+	static void ListExecuteFunction(Vector &result, const Vector &state_vector, idx_t count,
+	                                ExpressionState &expr_state) {
 		UnifiedVectorFormat sdata;
 		state_vector.ToUnifiedFormat(sdata);
 		auto states = UnifiedVectorFormat::GetData<HistogramAggState<T, MAP_TYPE> *>(sdata);
@@ -218,9 +221,17 @@ struct DistinctFunctor {
 				continue;
 			}
 
-			for (auto &entry : *state.hist) {
-				OP::template HistogramFinalize<T>(entry.first, child_elements, current_offset);
-				current_offset++;
+			auto entry = state.hist->begin();
+			const auto entry_end = current_offset + state.hist->size();
+			while (true) {
+				const auto block_end = MinValue<idx_t>(entry_end, current_offset + LIST_AGGREGATES_CHECK_ELEMENTS);
+				for (; current_offset < block_end; ++entry, ++current_offset) {
+					OP::template HistogramFinalize<T>(entry->first, child_elements, current_offset);
+				}
+				if (current_offset == entry_end) {
+					break;
+				}
+				expr_state.InterruptCheck();
 			}
 			list_entries.WriteValue(list_entry_t(entry_offset, current_offset - entry_offset));
 		}
@@ -232,7 +243,7 @@ struct DistinctFunctor {
 
 struct UniqueFunctor {
 	template <class OP, class T, class MAP_TYPE = sql_value_map_t<T, idx_t>>
-	static void ListExecuteFunction(Vector &result, const Vector &state_vector, idx_t count) {
+	static void ListExecuteFunction(Vector &result, const Vector &state_vector, idx_t count, ExpressionState &state) {
 		UnifiedVectorFormat sdata;
 		state_vector.ToUnifiedFormat(sdata);
 		auto states = UnifiedVectorFormat::GetData<HistogramAggState<T, MAP_TYPE> *>(sdata);
@@ -303,6 +314,7 @@ void ListAggregatesFunction(DataChunk &args, ExpressionState &state, Vector &res
 	SelectionVector sel_vector(STANDARD_VECTOR_SIZE);
 
 	auto update_states = [&](idx_t update_count) {
+		state.InterruptCheck();
 		vector<Vector> inputs;
 		inputs.reserve(aggr.GetChildren().size());
 		inputs.emplace_back(child_vector, sel_vector, update_count);
@@ -386,58 +398,58 @@ void ListAggregatesFunction(DataChunk &args, ExpressionState &state, Vector &res
 #if !DUCKDB_SMALLER_BINARY(list_aggregate_types)
 		case PhysicalType::BOOL:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeValueFunctor, bool>(
-			    result, state_vector.state_vector, count);
+			    result, state_vector.state_vector, count, state);
 			break;
 		case PhysicalType::UINT8:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeValueFunctor, uint8_t>(
-			    result, state_vector.state_vector, count);
+			    result, state_vector.state_vector, count, state);
 			break;
 		case PhysicalType::UINT16:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeValueFunctor, uint16_t>(
-			    result, state_vector.state_vector, count);
+			    result, state_vector.state_vector, count, state);
 			break;
 		case PhysicalType::UINT32:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeValueFunctor, uint32_t>(
-			    result, state_vector.state_vector, count);
+			    result, state_vector.state_vector, count, state);
 			break;
 		case PhysicalType::UINT64:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeValueFunctor, uint64_t>(
-			    result, state_vector.state_vector, count);
+			    result, state_vector.state_vector, count, state);
 			break;
 		case PhysicalType::INT8:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeValueFunctor, int8_t>(
-			    result, state_vector.state_vector, count);
+			    result, state_vector.state_vector, count, state);
 			break;
 		case PhysicalType::INT16:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeValueFunctor, int16_t>(
-			    result, state_vector.state_vector, count);
+			    result, state_vector.state_vector, count, state);
 			break;
 		case PhysicalType::INT32:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeValueFunctor, int32_t>(
-			    result, state_vector.state_vector, count);
+			    result, state_vector.state_vector, count, state);
 			break;
 		case PhysicalType::INT64:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeValueFunctor, int64_t>(
-			    result, state_vector.state_vector, count);
+			    result, state_vector.state_vector, count, state);
 			break;
 		case PhysicalType::FLOAT:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeValueFunctor, float>(
-			    result, state_vector.state_vector, count);
+			    result, state_vector.state_vector, count, state);
 			break;
 		case PhysicalType::DOUBLE:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeValueFunctor, double>(
-			    result, state_vector.state_vector, count);
+			    result, state_vector.state_vector, count, state);
 			break;
 		case PhysicalType::VARCHAR:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeStringValueFunctor, string_t,
 			                                               OwningStringMap<idx_t>>(result, state_vector.state_vector,
-			                                                                       count);
+			                                                                       count, state);
 			break;
 #endif
 		default:
 			FUNCTION_FUNCTOR::template ListExecuteFunction<FinalizeGenericValueFunctor, string_t,
 			                                               OwningStringMap<idx_t>>(result, state_vector.state_vector,
-			                                                                       count);
+			                                                                       count, state);
 			break;
 		}
 	}
