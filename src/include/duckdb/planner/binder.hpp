@@ -20,6 +20,7 @@
 #include "duckdb/parser/column_definition.hpp"
 #include "duckdb/parser/tableref/match_recognize_ref.hpp"
 #include "duckdb/parser/qualified_name.hpp"
+#include "duckdb/parser/qualified_name_set.hpp"
 #include "duckdb/parser/query_node.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/parser/result_modifier.hpp"
@@ -58,6 +59,8 @@ class TableCatalogEntry;
 class ViewCatalogEntry;
 class TableMacroCatalogEntry;
 class MacroCatalogEntry;
+class MacroFunction;
+class ScalarMacroCatalogEntry;
 class UpdateSetInfo;
 class LogicalProjection;
 class LogicalGet;
@@ -190,9 +193,61 @@ private:
 };
 
 //! GlobalBinderState is state shared over the ENTIRE query, including subqueries, views, etc
+struct MacroParameterUse {
+	idx_t references = 0;
+	bool shareable = true;
+	bool aggregated = false;
+	bool caller_aggregated = false;
+	identifier_set_t lambda_names;
+};
+
+struct MacroArgumentScan {
+	bool blocked = false;
+	bool constant = true;
+	bool has_parameter = false;
+	bool lambda_body = true;
+	bool subquery = false;
+	bool set_returning = false;
+	identifier_set_t names;
+};
+
+struct MacroBodyUse {
+	identifier_map_t<MacroParameterUse> parameters;
+	bool is_volatile = false;
+	bool lambda_body = true;
+	bool level_independent = true;
+	bool subquery = false;
+	optional_ptr<const ParsedExpression> select_item;
+};
+
+struct BoundMacroArgument {
+	unique_ptr<Expression> expression;
+	optional_ptr<const ExpressionBinder> owner;
+};
+
+enum class MacroFunctionKind : uint8_t {
+	FUNCTION,
+	VOLATILE_FUNCTION,
+	MACRO,
+	AGGREGATE,
+	SET_RETURNING,
+	OTHER,
+};
+
+struct MacroFunctionLookup {
+	MacroFunctionKind kind = MacroFunctionKind::OTHER;
+	optional_ptr<ScalarMacroCatalogEntry> macro;
+};
+
 struct GlobalBinderState {
 	//! The count of bound_tables
 	idx_t bound_tables = 0;
+	unordered_map<const MacroFunction *, MacroBodyUse> macro_body_uses;
+	unordered_map<const ScalarMacroCatalogEntry *, Value> constant_macros;
+	qualified_name_map_t<MacroFunctionLookup> macro_functions;
+	idx_t shared_macro_arguments = 0;
+	identifier_map_t<BoundMacroArgument> bound_macro_arguments;
+	idx_t macro_type_probing = 0;
 	//! Statement properties
 	StatementProperties prop;
 	//! Binding mode
@@ -253,8 +308,6 @@ public:
 	Identifier alias;
 	//! Macro parameter bindings (if any)
 	optional_ptr<DummyBinding> macro_binding;
-	//! The intermediate lambda bindings to bind nested lambdas (if any)
-	optional_ptr<vector<DummyBinding>> lambda_bindings;
 
 	unordered_map<TableIndex, LogicalOperator *> recursive_ctes;
 
@@ -556,7 +609,8 @@ private:
 	                             unique_ptr<LogicalOperator> child_operator,
 	                             virtual_column_map_t virtual_columns = virtual_column_map_t());
 
-	unique_ptr<QueryNode> BindTableMacro(FunctionExpression &function, MacroCatalogEntry &macro_func, idx_t depth);
+	unique_ptr<QueryNode> BindTableMacro(FunctionExpression &function, MacroCatalogEntry &macro_func, idx_t depth,
+	                                     optional_ptr<MacroFunction> &definition);
 
 	BoundStatement BindCTE(const Identifier &ctename, CommonTableExpressionInfo &info);
 

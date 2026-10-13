@@ -22,8 +22,12 @@
 #include "duckdb/parser/constraints/list.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/parser/expression/case_expression.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/parser/parsed_data/create_job_info.hpp"
@@ -37,6 +41,7 @@
 #include "duckdb/parser/common_table_expression_info.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -366,6 +371,9 @@ public:
 			if (table && DependencyManager::CanDepend(catalog, table->ParentCatalog())) {
 				LogicalDependency dependency(*table);
 				for (auto &column : get.GetColumnIds()) {
+					if (column.IsVirtualColumn()) {
+						continue;
+					}
 					dependency.subdependencies.insert(
 					    SubDependency {AlterTableType::REMOVE_COLUMN, table->GetColumn(column.ToLogical()).Name()});
 				}
@@ -584,9 +592,11 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			auto default_val = ExpressionExecutor::EvaluateScalar(context, *bound_default);
 
 			// Save this back as a constant expression
-			auto const_expr = ConstantExpression::FromValue(default_val);
-			const_expr->SetAlias(param_name);
-			it.second = std::move(const_expr);
+			if (!TypeVisitor::Contains(default_val.type(), [](const LogicalType &type) { return type.HasAlias(); })) {
+				auto const_expr = ConstantExpression::FromValue(default_val);
+				const_expr->SetAlias(param_name);
+				it.second = std::move(const_expr);
+			}
 			default_values[param_name] = std::move(default_val);
 		}
 
@@ -643,27 +653,20 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			    base.GetFunctionName().GetIdentifierName());
 		}
 
-		auto this_macro_binding =
-		    make_uniq<DummyBinding>(dummy_types, dummy_names, base.GetFunctionName().GetIdentifierName());
+		auto this_macro_binding = make_uniq<DummyBinding>(dummy_types, dummy_names, string());
 		macro_binding = this_macro_binding.get();
 
 		// bind it to verify the function was defined correctly
 		ErrorData error;
 		auto types_compatible = [&](const LogicalType &actual, const LogicalType &expected) -> bool {
-			if (expected.id() == LogicalTypeId::ANY) {
-				return true;
-			}
-			// PG-compat: RETURNS VOID accepts any body return; the macro callsite
-			// expects the function call to evaluate to NULL regardless of the
-			// body's last expression type.
-			if (expected.id() == LogicalTypeId::SQLNULL && expected.GetAlias() == "void") {
-				return true;
-			}
-			if (actual == expected) {
-				return true;
-			}
-			return CastFunctionSet::ImplicitCastCost(context, actual, expected) >= 0;
+			GetCastFunctionInput input(context);
+			return !MacroFunction::ResultNeedsCast(actual, expected) ||
+			       !CastFunctionSet::Get(context).GetCastFunction(actual, expected, input).IsNullCast();
 		};
+		for (auto &return_type : function->return_types) {
+			BindLogicalType(return_type);
+			return_type = MacroFunction::WithoutTypmod(return_type);
+		}
 		if (info.type == CatalogType::MACRO_ENTRY) {
 			BoundSelectNode sel_node;
 			SelectBinder binder(*this, context, sel_node);
@@ -676,20 +679,40 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			ExpressionBinder::QualifyColumnNames(*this, expression);
 			try {
 				auto &ret_types = function->return_types;
-				// Resolve UNBOUND types from the grammar to concrete LogicalTypes
-				// so downstream consumers (pg_proc, serialization) see real IDs.
-				for (auto &rt : ret_types) {
-					BindLogicalType(rt);
+				if (ret_types.size() == 1 && MacroFunction::IsVoid(ret_types[0])) {
+					auto &void_function = function->Cast<ScalarMacroFunction>();
+					if (void_function.query_body) {
+						auto &statement = void_function.expression->Cast<SubqueryExpression>().SubqueryMutable();
+						auto body = make_uniq<SelectStatement>();
+						body->node = std::move(statement->node);
+						const Identifier body_alias("0_void_body");
+						vector<unique_ptr<ParsedExpression>> row;
+						row.push_back(make_uniq<ColumnRefExpression>(body_alias));
+						vector<unique_ptr<ParsedExpression>> row_hash;
+						row_hash.push_back(make_uniq<FunctionExpression>(Identifier("hash"), std::move(row)));
+						auto no_rows = make_uniq<OperatorExpression>(
+						    ExpressionType::OPERATOR_IS_NULL,
+						    make_uniq<FunctionExpression>(Identifier("max"), std::move(row_hash)));
+						auto rows_read = make_uniq<CaseExpression>();
+						rows_read->CaseChecksMutable().push_back(CaseCheck {
+						    std::move(no_rows), make_uniq<CastExpression>(ret_types[0], ConstantExpression::Null())});
+						rows_read->ElseMutable() = make_uniq<CastExpression>(ret_types[0], ConstantExpression::Null());
+						auto result = make_uniq<SelectNode>();
+						result->select_list.push_back(std::move(rows_read));
+						result->from_table = make_uniq<SubqueryRef>(std::move(body), body_alias);
+						statement->node = std::move(result);
+					} else {
+						void_function.expression = make_uniq<CastExpression>(ret_types[0], ConstantExpression::Null());
+					}
+					expression = void_function.expression->Copy();
+					reference_parameters(expression, false);
 				}
-				// PG-compat: RETURNS VOID functions evaluate to a single NULL row
-				// regardless of body. Replace the stored body with a NULL constant
-				// so downstream macro expansion can't trip over the body's actual
-				// shape (e.g. multiple-column SELECTs).
-				if (ret_types.size() == 1 && ret_types[0].id() == LogicalTypeId::SQLNULL &&
-				    ret_types[0].GetAlias() == "void") {
-					function->Cast<ScalarMacroFunction>().expression = ConstantExpression::Null();
-					expression = function->Cast<ScalarMacroFunction>().expression->Copy();
+				auto &scalar_function = function->Cast<ScalarMacroFunction>();
+				if (binder.InlineSqlFunctionBody(scalar_function)) {
+					expression = scalar_function.expression->Copy();
+					ExpressionBinder::QualifyColumnNames(*this, expression);
 				}
+				bool query_validated = false;
 				// Scalar RETURNS with BEGIN ATOMIC/AS $$ SELECT $$ body was
 				// converted to ScalarMacroFunction wrapping a SubqueryExpression.
 				// Validate the inner SELECT against the declared RETURNS type by
@@ -698,6 +721,7 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 				if (!ret_types.empty() && expression->GetExpressionClass() == ExpressionClass::SUBQUERY) {
 					auto &sub_expr = expression->Cast<SubqueryExpression>();
 					if (sub_expr.Subquery() && sub_expr.Subquery()->node) {
+						query_validated = true;
 						auto dummy_binder = CreateBinder(context, this);
 						if (should_create_dependencies) {
 							dummy_binder->SetCatalogLookupCallback(binder_callback);
@@ -707,10 +731,19 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 						    *query_node, [&dummy_binder](unique_ptr<ParsedExpression> &child) {
 							    ExpressionBinder::QualifyColumnNames(*dummy_binder, child);
 						    });
+						if (ret_types.size() > 1 && function->Cast<ScalarMacroFunction>().query_body) {
+							auto &record = query_node->Cast<SelectNode>().from_table->Cast<SubqueryRef>();
+							auto body = record.subquery->node->Copy();
+							const auto columns = CreateBinder(context, this)->Bind(*body).types.size();
+							if (columns != ret_types.size()) {
+								throw BinderException("return type mismatch in function declared to return record\n"
+								                      "DETAIL: Final statement returns too %s columns.",
+								                      columns > ret_types.size() ? "many" : "few");
+							}
+						}
 						auto bound = dummy_binder->Bind(*query_node);
-						auto &resolved = ret_types[0];
-						const bool is_void_return =
-						    resolved.id() == LogicalTypeId::SQLNULL && resolved.GetAlias() == "void";
+						const auto resolved = function->ResultType();
+						const bool is_void_return = MacroFunction::IsVoid(resolved);
 						if (!is_void_return) {
 							if (!bound.types.empty() && !types_compatible(bound.types[0], resolved)) {
 								throw BinderException("return type mismatch in function declared to return %s\n"
@@ -727,25 +760,22 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 					}
 				}
 
-				auto bind_result = binder.Bind(expression, 0, false);
-				if (bind_result.HasError()) {
-					error = std::move(bind_result.error);
-					error.Throw();
-				}
-				// Validate scalar RETURN expr (non-subquery body).
-				if (!ret_types.empty() && bind_result.expression) {
-					auto &resolved = ret_types[0];
-					auto &actual = bind_result.expression->GetReturnType();
-					if (!types_compatible(actual, resolved)) {
-						throw BinderException("return type mismatch in function declared to return %s\n"
-						                      "DETAIL: Actual return type is %s.",
-						                      StringUtil::Lower(resolved.ToString()),
-						                      StringUtil::Lower(actual.ToString()));
+				if (!query_validated) {
+					auto bind_result = binder.Bind(expression, 0, false);
+					if (bind_result.HasError()) {
+						error = std::move(bind_result.error);
+						error.Throw();
 					}
-					if (ret_types.size() != 1) {
-						throw BinderException("return type mismatch in function declared to return %s\n"
-						                      "DETAIL: Final statement must return exactly one column.",
-						                      StringUtil::Lower(resolved.ToString()));
+					// Validate scalar RETURN expr (non-subquery body).
+					if (!ret_types.empty()) {
+						const auto resolved = function->ResultType();
+						auto &actual = bind_result.expression->GetReturnType();
+						if (!types_compatible(actual, resolved)) {
+							throw BinderException("return type mismatch in function declared to return %s\n"
+							                      "DETAIL: Actual return type is %s.",
+							                      StringUtil::Lower(resolved.ToString()),
+							                      StringUtil::Lower(actual.ToString()));
+						}
 					}
 				}
 			} catch (const std::exception &ex) {
@@ -765,27 +795,21 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 				    ExpressionBinder::QualifyColumnNames(*dummy_binder, child);
 			    });
 			try {
+				auto &declared = function->return_types;
 				auto bound = dummy_binder->Bind(*query_node);
 				if (should_create_dependencies && catalog.Compatibility() == SqlCompatibility::POSTGRES) {
 					ViewColumnDependencies(catalog, dependencies).VisitOperator(*bound.plan);
 				}
 
 				// Validate declared return types against actual query output.
-				auto &declared = function->return_types;
 				if (!declared.empty() && bound.types.size() > 0) {
 					// is_scalar: RETURNS <type> (single scalar return, stored as TABLE_MACRO)
 					bool is_scalar = declared.size() == 1 && info.type == CatalogType::TABLE_MACRO_ENTRY;
 					bool is_table = declared.size() > 1 || (declared.size() == 1 && !is_scalar);
 
-					// Resolve unbound types (grammar produces UNBOUND type ids)
-					for (auto &dt : declared) {
-						dummy_binder->BindLogicalType(dt);
-					}
-
 					// PG-compat: RETURNS VOID accepts any body shape (PG discards the
 					// result and emits a single NULL row).
-					const bool is_void_return =
-					    is_scalar && declared[0].id() == LogicalTypeId::SQLNULL && declared[0].GetAlias() == "void";
+					const bool is_void_return = is_scalar && MacroFunction::IsVoid(declared[0]);
 					// PG checks per-column types first (up to min columns),
 					// then reports column count mismatch.
 					const auto check_count = MinValue(bound.types.size(), declared.size());

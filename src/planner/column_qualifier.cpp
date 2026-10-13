@@ -147,6 +147,10 @@ unique_ptr<ParsedExpression> ColumnQualifier::QualifyColumnName(const ParsedExpr
 		return lambda_ref;
 	}
 
+	if (binder.global_binder_state->bound_macro_arguments.count(column_name)) {
+		return make_uniq<ColumnRefExpression>(column_name);
+	}
+
 	// find a table binding that contains this column name
 	auto table_binding = binder.bind_context.GetMatchingBinding(column_name, expr);
 
@@ -202,6 +206,7 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 
 			// replace the expression with the qualified column reference
 			new_expr->SetQueryLocation(col_ref.GetQueryLocation());
+			new_expr->SetNamedParameter(expr->IsNamedParameter());
 			expr = std::move(new_expr);
 		}
 		return;

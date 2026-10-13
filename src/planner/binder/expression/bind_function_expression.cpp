@@ -9,6 +9,7 @@
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
 #include "duckdb/parser/srf_utils.hpp"
@@ -310,6 +311,7 @@ static BindResult BindWithoutSetReturningExpansionImpl(ExpressionBinder &binder,
 
 BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t depth,
                                             unique_ptr<ParsedExpression> &expr_ptr) {
+	const bool whole_row = std::exchange(whole_row_call, false);
 	reference<CatalogEntry> func = BindFunction(function);
 
 	// PG compat: in a SELECT list, if the scalar lookup won but a table
@@ -336,6 +338,7 @@ BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t 
 	switch (func.get().type) {
 	case CatalogType::AGGREGATE_FUNCTION_ENTRY:
 	case CatalogType::WINDOW_FUNCTION_ENTRY:
+	case CatalogType::MACRO_ENTRY:
 		break;
 	default:
 		if (function.Distinct() || function.Filter() || !function.OrderBy()->orders.empty()) {
@@ -388,25 +391,27 @@ BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t 
 	case CatalogType::WINDOW_FUNCTION_ENTRY:
 		// window function
 		return BindWindow(function, func.get().Cast<WindowFunctionCatalogEntry>(), depth);
-	case CatalogType::TABLE_FUNCTION_ENTRY: {
-		// PG compat: table functions in SELECT -> unnest their results as rows.
-		// Routes through SelectBinder::BindUnnest, sharing BoundUnnestNode with other SRFs.
-		auto unnest_func = make_uniq<FunctionExpression>("unnest", vector<unique_ptr<ParsedExpression>> {});
-		unnest_func->GetArgumentsMutable().push_back(WrapTableFuncAsList(function.Copy()));
-		unnest_func->SetAlias(function.GetAlias().empty() ? function.FunctionName() : function.GetAlias());
-		expr_ptr = std::move(unnest_func);
-		return BindExpression(expr_ptr, depth, false);
-	}
+	case CatalogType::TABLE_FUNCTION_ENTRY:
 	case CatalogType::TABLE_MACRO_ENTRY: {
 		// PG-compat: procedures with a table body are catalogued as TABLE_MACRO.
-		// `SELECT proc()` for a procedure (CALL-only) must surface the canonical
-		// PG error rather than the generic "Unsupported catalog type" fallthrough.
-		auto &table_macro = func.get().Cast<TableMacroCatalogEntry>();
-		if (table_macro.is_procedure) {
+		// `SELECT proc()` for a procedure (CALL-only) must surface the canonical PG error.
+		if (func.get().type == CatalogType::TABLE_MACRO_ENTRY &&
+		    func.get().Cast<TableMacroCatalogEntry>().is_procedure) {
 			throw BinderException(function, "%s() is a procedure\nHINT: To call a procedure, use CALL.",
 			                      function.FunctionName().GetIdentifierName());
 		}
-		throw InvalidInputException("Unsupported catalog type when binding function");
+		// PG compat: table functions in SELECT -> unnest their results as rows.
+		// Routes through SelectBinder::BindUnnest, sharing BoundUnnestNode with other SRFs.
+		const bool record = func.get().type == CatalogType::TABLE_MACRO_ENTRY || whole_row;
+		auto unnest_func = make_uniq<FunctionExpression>("unnest", vector<unique_ptr<ParsedExpression>> {});
+		unnest_func->GetArgumentsMutable().push_back(WrapTableFuncAsList(function.Copy(), record));
+		if (record) {
+			unnest_func->GetArgumentsMutable().emplace_back(Identifier("set_returning"),
+			                                                ConstantExpression::Boolean(true));
+		}
+		unnest_func->SetAlias(function.GetAlias().empty() ? function.FunctionName() : function.GetAlias());
+		expr_ptr = std::move(unnest_func);
+		return BindExpression(expr_ptr, depth, false);
 	}
 	default:
 		throw InvalidInputException("Unsupported catalog type when binding function");
@@ -546,8 +551,17 @@ BindResult ExpressionBinder::BindLambdaFunction(FunctionExpression &function, Sc
 		}
 	}
 
-	// bind the lambda parameter
 	auto &lambda_expr = args[lambda_expr_idx].GetExpressionMutable()->Cast<LambdaExpression>();
+	return BindLambdaFunction(function, func, lambda_expr, lambda_expr_idx, std::move(bound_children),
+	                          std::move(function_child_types), depth);
+}
+
+BindResult ExpressionBinder::BindLambdaFunction(const FunctionExpression &function, ScalarFunctionCatalogEntry &func,
+                                                LambdaExpression &lambda_expr, idx_t lambda_expr_idx,
+                                                vector<unique_ptr<Expression>> bound_children,
+                                                vector<LogicalType> function_child_types, idx_t depth) {
+	auto bind_lambda_function = func.functions.functions.front()->GetBindLambdaCallback();
+	ErrorData error;
 
 	unique_ptr<ParsedExpression> lambda_expr_copy;
 	const bool is_list_reduce = func.name == "list_reduce";
@@ -592,7 +606,7 @@ BindResult ExpressionBinder::BindLambdaFunction(FunctionExpression &function, Sc
 	}
 
 	// successfully bound: keep the bound lambda alongside the other bound children
-	auto alias = args[lambda_expr_idx].GetExpression().GetAlias();
+	auto alias = lambda_expr.GetAlias();
 	bind_lambda_result.expression->SetAlias(alias);
 
 	bound_children[lambda_expr_idx] = std::move(bind_lambda_result.expression);

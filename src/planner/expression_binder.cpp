@@ -1,5 +1,8 @@
 #include "duckdb/planner/expression_binder.hpp"
 
+#include <absl/time/clock.h>
+
+#include "duckdb/common/fault_points.hpp"
 #include "duckdb/function/match_recognize.hpp"
 
 #include "duckdb/parser/expression/list.hpp"
@@ -25,6 +28,36 @@ ExpressionBinder::ExpressionBinder(Binder &binder, ClientContext &context) : bin
 ExpressionBinder::~ExpressionBinder() {
 }
 
+idx_t ExpressionBinder::SharedMacroArguments() const {
+	return binder.global_binder_state->shared_macro_arguments;
+}
+
+bool ExpressionBinder::IsArgumentReference(const ColumnRefExpression &col_ref) {
+	if (col_ref.IsQualified()) {
+		return false;
+	}
+	auto &name = col_ref.GetColumnName();
+	if (binder.global_binder_state->bound_macro_arguments.count(name)) {
+		return true;
+	}
+	if (lambda_bindings) {
+		for (auto &binding : *lambda_bindings) {
+			if (binding.HasMatchingBinding(name)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+BindResult ExpressionBinder::BindChunkColumn(const Identifier &name, const LogicalType &type, idx_t position) {
+	if (!chunk_columns.IsValid()) {
+		chunk_columns = binder.GenerateTableIndex();
+	}
+	return BindResult(
+	    make_uniq<BoundColumnRefExpression>(name, type, ColumnBinding(chunk_columns, ProjectionIndex(position))));
+}
+
 void ExpressionBinder::InitializeStackCheck() {
 	static constexpr idx_t INITIAL_DEPTH = 5;
 	if (binder.HasEnclosingScope()) {
@@ -47,6 +80,9 @@ StackChecker<ExpressionBinder> ExpressionBinder::StackCheck(const ParsedExpressi
 
 BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression) {
 	auto stack_checker = StackCheck(*expr);
+	SDB_IF_FAILURE("slow_expression_bind") {
+		absl::SleepFor(absl::Milliseconds(1));
+	}
 
 	auto &expr_ref = *expr;
 	switch (expr_ref.GetExpressionClass()) {
@@ -270,6 +306,14 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
 		bind_result.error.Throw();
 	}
 	unique_ptr<Expression> result = std::move(bind_result.expression);
+	if (chunk_columns.IsValid()) {
+		ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
+		    result, [&](BoundColumnRefExpression &column, unique_ptr<Expression> &reference) {
+			    D_ASSERT(column.Binding().table_index == chunk_columns);
+			    reference = make_uniq<BoundReferenceExpression>(column.GetAlias(), column.GetReturnType(),
+			                                                    column.Binding().column_index.GetIndex());
+		    });
+	}
 	if (target_type.id() != LogicalTypeId::INVALID) {
 		// the binder has a specific target type: add a cast to that type
 		result = BoundCastExpression::AddCastToType(context, std::move(result), target_type);
@@ -295,7 +339,18 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
 BindResult ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression) {
 	auto query_location = expr->GetQueryLocation();
 	auto alias = expr->GetAlias();
-	BindResult result = BindExpression(expr, depth, root_expression);
+	BindResult result;
+	auto &bound_macro_arguments = binder.global_binder_state->bound_macro_arguments;
+	if (!bound_macro_arguments.empty() && expr->GetExpressionClass() == ExpressionClass::COLUMN_REF &&
+	    !expr->Cast<ColumnRefExpression>().IsQualified()) {
+		auto bound = bound_macro_arguments.find(expr->Cast<ColumnRefExpression>().GetColumnName());
+		if (bound != bound_macro_arguments.end()) {
+			result = BindResult(BindMacroArgument(bound->second));
+		}
+	}
+	if (!result.expression) {
+		result = BindExpression(expr, depth, root_expression);
+	}
 	if (result.HasError()) {
 		return result;
 	}

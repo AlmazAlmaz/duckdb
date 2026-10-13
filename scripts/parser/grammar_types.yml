@@ -1060,6 +1060,19 @@ MacroParameter:
     - MacroParameter
     - SimpleParameter
     - NamedParameter
+    - ModeParameter
+    - DefaultParameter
+    - ParameterSignature
+
+ParameterMode:
+  type: "char"
+  by_value: true
+  rules:
+    - FuncArgMode
+    - InArgMode
+    - OutArgMode
+    - InoutArgMode
+    - VariadicArgMode
 
 JobScheduleInfo:
   type: "JobScheduleInfo"
@@ -2196,6 +2209,7 @@ excluded_rules:
   - UsingSample
   - TableSample
   - NamedParameterAssignment
+  - ParameterDefault
   - ByName
   - CollateOperator
   - ExportClause
