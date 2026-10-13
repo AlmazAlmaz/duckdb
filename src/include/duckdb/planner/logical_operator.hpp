@@ -68,10 +68,12 @@ public:
 
 	//! Resolve the types of the logical operator and its children
 	void ResolveOperatorTypes();
+	void ResolveOwnTypes();
 
 	//! Returns true if this operator or any of its descendants has side effects
 	//! Used to prevent inlining or elimination of side-effecting CTEs.
 	bool HasSideEffects() const;
+	bool HasOwnSideEffects() const;
 	//! Returns true if this operator or any of its descendants contains a volatile expression
 	bool HasVolatileExpressions() const;
 
@@ -115,6 +117,9 @@ public:
 protected:
 	//! Resolve types for this specific operator
 	virtual void ResolveTypes() = 0;
+	virtual optional_ptr<LogicalOperator> GetBindingChild();
+	virtual void DeriveColumnBindings(vector<ColumnBinding> &bindings);
+	vector<ColumnBinding> GetDerivedColumnBindings();
 
 public:
 	template <class TARGET>

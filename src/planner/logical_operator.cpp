@@ -34,6 +34,28 @@ vector<ColumnBinding> LogicalOperator::GetColumnBindings() {
 	return {ColumnBinding(TableIndex(0), ProjectionIndex(0))};
 }
 
+optional_ptr<LogicalOperator> LogicalOperator::GetBindingChild() {
+	return nullptr;
+}
+
+void LogicalOperator::DeriveColumnBindings(vector<ColumnBinding> &bindings) {
+}
+
+vector<ColumnBinding> LogicalOperator::GetDerivedColumnBindings() {
+	vector<reference<LogicalOperator>> chain;
+	reference<LogicalOperator> source = *this;
+	for (auto child = GetBindingChild(); child; child = source.get().GetBindingChild()) {
+		chain.push_back(source);
+		source = *child;
+	}
+	D_ASSERT(!chain.empty());
+	auto bindings = source.get().GetColumnBindings();
+	for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+		it->get().DeriveColumnBindings(bindings);
+	}
+	return bindings;
+}
+
 TableIndex LogicalOperator::GetRootIndex() {
 	auto bindings = GetColumnBindings();
 	if (bindings.empty()) {
@@ -107,7 +129,7 @@ InsertionOrderPreservingMap<string> LogicalOperator::ParamsToString() const {
 	return result;
 }
 
-bool LogicalOperator::HasSideEffects() const {
+bool LogicalOperator::HasOwnSideEffects() const {
 	switch (type) {
 	case LogicalOperatorType::LOGICAL_INSERT:
 	case LogicalOperatorType::LOGICAL_UPDATE:
@@ -116,7 +138,13 @@ bool LogicalOperator::HasSideEffects() const {
 	case LogicalOperatorType::LOGICAL_COPY_TO_FILE:
 		return true;
 	default:
-		break;
+		return false;
+	}
+}
+
+bool LogicalOperator::HasSideEffects() const {
+	if (HasOwnSideEffects()) {
+		return true;
 	}
 	for (auto &child : children) {
 		if (child && child->HasSideEffects()) {
@@ -145,12 +173,16 @@ bool LogicalOperator::HasVolatileExpressions() const {
 }
 
 void LogicalOperator::ResolveOperatorTypes() {
-	types.clear();
 	// first resolve child types
 	for (auto &child : children) {
 		child->ResolveOperatorTypes();
 	}
 	// now resolve the types for this operator
+	ResolveOwnTypes();
+}
+
+void LogicalOperator::ResolveOwnTypes() {
+	types.clear();
 	ResolveTypes();
 	D_ASSERT(types.size() == GetColumnBindings().size());
 }
