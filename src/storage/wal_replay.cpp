@@ -84,6 +84,8 @@ public:
 	optional_idx checkpoint_end_position;
 	optional_idx expected_checkpoint_id;
 	WALReplayState replay_state;
+	optional_idx source_catalog;
+	bool skip_entries = false;
 	//! Blocks referenced by ROW_GROUP_DATA entries, collected during the deserialize-only scan. They are marked as used
 	//! only once we have decided to replay the WAL, so if log replay is not needed, these blocks won't be
 	//! double-referenced.
@@ -283,7 +285,7 @@ public:
 	}
 
 	bool DeserializeOnly() const {
-		return deserialize_only;
+		return deserialize_only || state.skip_entries;
 	}
 
 	static void ThrowVersionError(idx_t checkpoint_iteration, idx_t expected_checkpoint_iteration);
@@ -305,7 +307,7 @@ protected:
 	}
 	bool CanSkipPayload(WALType wal_type) const {
 		// Unframed WAL v1 entries must still be deserialized; Replay* guards suppress their side effects.
-		if (!deserialize_only || !data) {
+		if (!DeserializeOnly() || !data) {
 			return false;
 		}
 		D_ASSERT(state.wal_version == 2 || state.wal_version == 3);
@@ -423,7 +425,8 @@ private:
 //===--------------------------------------------------------------------===//
 struct WriteAheadLogReplayer {
 public:
-	WriteAheadLogReplayer(QueryContext context, StorageManager &storage_manager, const string &wal_path);
+	WriteAheadLogReplayer(QueryContext context, StorageManager &storage_manager, const string &wal_path,
+	                      optional_idx source_catalog = optional_idx());
 
 	unique_ptr<WriteAheadLog> Replay();
 
@@ -446,6 +449,7 @@ private:
 	const string &main_wal_path;
 	FileSystem &fs;
 	bool retained_replayed = false;
+	optional_idx source_catalog;
 };
 
 unique_ptr<WriteAheadLog> WriteAheadLog::Replay(QueryContext context, StorageManager &storage_manager,
@@ -454,10 +458,16 @@ unique_ptr<WriteAheadLog> WriteAheadLog::Replay(QueryContext context, StorageMan
 	return wal_replay.Replay();
 }
 
+void WriteAheadLog::ReplayCatalog(QueryContext context, StorageManager &storage_manager, const string &log_path,
+                                  idx_t catalog_oid) {
+	WriteAheadLogReplayer wal_replay(context, storage_manager, log_path, catalog_oid);
+	wal_replay.Replay();
+}
+
 WriteAheadLogReplayer::WriteAheadLogReplayer(QueryContext context, StorageManager &storage_manager,
-                                             const string &main_wal_path)
+                                             const string &main_wal_path, optional_idx source_catalog)
     : context(context), storage_manager(storage_manager), database(storage_manager.GetAttached()),
-      main_wal_path(main_wal_path), fs(FileSystem::Get(storage_manager.GetAttached())) {
+      main_wal_path(main_wal_path), fs(FileSystem::Get(storage_manager.GetAttached())), source_catalog(source_catalog) {
 }
 
 unique_ptr<WriteAheadLog> WriteAheadLogReplayer::Replay() {
@@ -839,6 +849,8 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 
 	// we need to recover from the WAL: actually set up the replay state
 	ReplayState state(database, *con.context, replay_state);
+	state.source_catalog = source_catalog;
+	state.skip_entries = source_catalog.IsValid();
 
 	auto &duck_manager = DuckTransactionManager::Get(database);
 	struct ReplayPositionGuard {
@@ -1740,7 +1752,11 @@ void WriteAheadLogDeserializer::ReplayDropIndex() {
 //===--------------------------------------------------------------------===//
 void WriteAheadLogDeserializer::ReplayUseCatalog() {
 	auto entry = WALUseCatalog::Deserialize(deserializer);
-	if (DeserializeOnly()) {
+	if (deserialize_only) {
+		return;
+	}
+	if (state.source_catalog.IsValid()) {
+		state.skip_entries = entry.catalog_oid != state.source_catalog.GetIndex();
 		return;
 	}
 	if (entry.catalog_oid == db.oid) {
@@ -1753,7 +1769,7 @@ void WriteAheadLogDeserializer::ReplayUseCatalog() {
 
 void WriteAheadLogDeserializer::ReplayCommitPrepared() {
 	auto entry = WALCommitPrepared::Deserialize(deserializer);
-	if (DeserializeOnly()) {
+	if (DeserializeOnly() || state.source_catalog.IsValid()) {
 		return;
 	}
 	if (entry.participant_oids.size() != entry.participant_generations.size()) {
