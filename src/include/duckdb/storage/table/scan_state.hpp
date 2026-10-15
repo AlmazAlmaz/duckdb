@@ -303,6 +303,7 @@ public:
 
 public:
 	void Initialize(const QueryContext &context_p, const vector<LogicalType> &types);
+	void ResetForReuse();
 	const vector<StorageIndex> &GetColumnIds();
 	ScanFilterInfo &GetFilterInfo();
 	ScanSamplingInfo &GetSamplingInfo();
@@ -374,6 +375,7 @@ public:
 	void Initialize(vector<StorageIndex> column_ids, optional_ptr<ClientContext> context = nullptr,
 	                optional_ptr<TableFilterSet> table_filters = nullptr,
 	                optional_ptr<SampleOptions> table_sampling = nullptr, idx_t estimated_table_row_count = 0);
+	void ResetForReuse();
 
 	const vector<StorageIndex> &GetColumnIds();
 

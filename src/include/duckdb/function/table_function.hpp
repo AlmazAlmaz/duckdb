@@ -29,6 +29,7 @@ struct PartitionStatistics;
 struct TableFunctionFileBindInput;
 struct TableFunctionFileBindInfo;
 struct TableFunctionFileInitInput;
+struct LocalTableFunctionState;
 
 //! Controls how a table function manages parallelism.
 enum class TableFunctionParallelism : uint8_t {
@@ -84,6 +85,14 @@ public:
 
 	virtual idx_t MaxThreads() const {
 		return 1;
+	}
+
+	virtual bool ResetForReuse(ClientContext &context) {
+		return false;
+	}
+
+	virtual bool ResetLocalStateForReuse(ExecutionContext &context, LocalTableFunctionState &local_state) {
+		return false;
 	}
 
 	template <class TARGET>
