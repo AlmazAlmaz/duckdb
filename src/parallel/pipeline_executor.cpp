@@ -343,10 +343,10 @@ SinkNextBatchType PipelineExecutor::NextBatch(OperatorPartitionData next_data, b
 	return SinkNextBatchType::READY;
 }
 
-PipelineExecuteResult PipelineExecutor::Execute(idx_t max_chunks) {
+PipelineExecuteResult PipelineExecutor::Execute(TaskExecutionMode mode) {
 	D_ASSERT(pipeline.sink);
 	auto &source_chunk = pipeline.operators.empty() ? final_chunk : *intermediate_chunks[0];
-	ExecutionBudget chunk_budget(max_chunks);
+	ExecutionBudget chunk_budget(NumericLimits<idx_t>::Maximum(), mode);
 
 	do {
 		context.client.InterruptCheck();
@@ -449,10 +449,6 @@ PipelineExecuteResult PipelineExecutor::Execute(idx_t max_chunks) {
 	}
 
 	return PushFinalize();
-}
-
-PipelineExecuteResult PipelineExecutor::Execute() {
-	return Execute(NumericLimits<idx_t>::Maximum());
 }
 
 PipelineExecuteResult PipelineExecutor::PushExternal(DataChunk &input,
@@ -814,6 +810,8 @@ OperatorResultType PipelineExecutor::Execute(DataChunk &input, DataChunk &result
 			if (current_idx == initial_idx) {
 				// if we got no output from the scan, we are done
 				break;
+			} else if (!in_process_operators.empty()) {
+				return OperatorResultType::HAVE_MORE_OUTPUT;
 			} else {
 				// if we got no output from an intermediate op
 				// we go back and try to pull data from the source again

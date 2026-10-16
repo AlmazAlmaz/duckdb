@@ -44,14 +44,32 @@ bool Executor::TrySubmitInlineTask(const shared_ptr<Task> &task_p) {
 	if (!caller_drives) {
 		return false;
 	}
-	lock_guard<mutex> slot_lock(inline_task_lock);
-	if (inline_task || std::find(drivers.begin(), drivers.end(), ThreadUtil::GetThreadId()) == drivers.end()) {
+	{
+		lock_guard<mutex> slot_lock(inline_task_lock);
+		if (inline_task) {
+			return false;
+		}
+		if (std::find(drivers.begin(), drivers.end(), ThreadUtil::GetThreadId()) != drivers.end()) {
+			inline_task = task_p;
+			// The slot bypasses ConcurrentQueue::Enqueue, which normally stamps the
+			// token (the ProcessPartial reschedule path reads it).
+			inline_task->token = *producer;
+			return true;
+		}
+	}
+	lock_guard<mutex> elock(executor_lock);
+	if (cancelled || !on_reschedule) {
 		return false;
 	}
-	inline_task = task_p;
-	// The slot bypasses ConcurrentQueue::Enqueue, which normally stamps the
-	// token (the ProcessPartial reschedule path reads it).
-	inline_task->token = *producer;
+	{
+		lock_guard<mutex> slot_lock(inline_task_lock);
+		if (inline_task) {
+			return false;
+		}
+		inline_task = task_p;
+		inline_task->token = *producer;
+	}
+	std::exchange(on_reschedule, {})();
 	return true;
 }
 
@@ -272,7 +290,7 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 		physical_plan = &plan;
 
 		this->profiler = ClientData::Get(context).profiler;
-		this->producer = scheduler.CreateProducer();
+		this->producer = scheduler.CreateProducer(context.GetSchedulerAccount());
 
 		auto verify_progress = Settings::Get<DebugVerifyProgressSetting>(context);
 		if (verify_progress != DebugProgressVerification::NONE) {
@@ -350,6 +368,7 @@ void Executor::CancelTasks() {
 				}
 				if (!scheduler.GetTaskFromProducerLocked(*producer, task_from_producer)) {
 					// Nothing to execute on this thread: wait until a task completes or is enqueued
+					TaskScheduler::BlockingScope blocking;
 					producer->producer_cv.Wait(lk.mutex());
 					continue;
 				}
@@ -449,6 +468,7 @@ void Executor::WaitForTask(absl::FunctionRef<bool()> is_done) {
 	// Nothing to run on this thread, all remaining tasks are either running on other threads or descheduled.
 	// Wait (bounded), but wake up on task completion or reschedule.
 	const auto wait_begin = TimePoint::Tick();
+	TaskScheduler::BlockingScope blocking;
 	task_reschedule.WaitWithTimeout(l.mutex(), absl::FromChrono(WAIT_TIME_MS));
 	const auto wait_micros = NumericCast<idx_t>(TimePoint::ElapsedMicros(wait_begin, TimePoint::Tick()));
 	blocked_thread_time += blocked_micros + wait_micros;
@@ -466,7 +486,7 @@ void Executor::RescheduleTask(shared_ptr<Task> &task_p) {
 		if (entry != to_be_rescheduled_tasks.end()) {
 			auto &scheduler = TaskScheduler::GetScheduler(context);
 			to_be_rescheduled_tasks.erase(*task_p);
-			scheduler.ScheduleTask(GetToken(), task_p);
+			scheduler.ScheduleConcurrentTask(GetToken(), task_p, TaskSchedulerType::REGULAR);
 			SignalTaskRescheduled(l);
 			break;
 		}
@@ -528,6 +548,7 @@ QueryResultState Executor::ExecuteTask(std::function<void()> on_reschedule_arg) 
 		}
 		if (task) {
 			// partially process the task
+			TaskScheduler::DriverSlice slice;
 			auto result = task->Execute(TaskExecutionMode::PROCESS_PARTIAL);
 			if (result == TaskExecutionResult::TASK_BLOCKED) {
 				task->Deschedule();
@@ -545,7 +566,7 @@ QueryResultState Executor::ExecuteTask(std::function<void()> on_reschedule_arg) 
 		if (!HasError()) {
 			// we (partially) processed a task and no exceptions were thrown
 			// give back control to the caller
-			if (task && Settings::Get<SchedulerProcessPartialSetting>(context)) {
+			if (task && TaskScheduler::ShouldYield()) {
 				auto &token = *task->token;
 				TaskScheduler::GetScheduler(context).ScheduleTask(token, task);
 				task.reset();
