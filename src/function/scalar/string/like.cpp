@@ -5,7 +5,9 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/storage/statistics/string_stats.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
 #include "re2/segment_plan.h"
@@ -200,7 +202,8 @@ bool TemplatedLikeOperator(const char *sdata, idx_t slen, const char *pdata, idx
 			char schar = READER::Operation(sdata, sidx);
 			if (HAS_ESCAPE && pchar == escape) {
 				if (pidx + 1 == plen) {
-					throw SyntaxException("Like pattern must not end with escape character!");
+					throw SyntaxException(Exception::InitializeExtraInfo("INVALID_ESCAPE_SEQUENCE", optional_idx()),
+					                      "LIKE pattern must not end with escape character");
 				}
 				if (READER::Operation(pdata, pidx + 1) == schar) {
 					pidx += 2;
@@ -455,11 +458,17 @@ bool LikeOperatorFunction(string_t &s, string_t &pat, char escape) {
 	return LikeOperatorFunction(s.GetData(), s.GetSize(), pat.GetData(), pat.GetSize(), escape);
 }
 
-char GetEscapeChar(string_t escape) {
+static void CheckEscapeString(const string_t &escape) {
 	// Only one escape character should be allowed
 	if (escape.GetSize() > 1) {
-		throw SyntaxException("Invalid escape string. Escape string must be empty or one character.");
+		auto extra_info = Exception::InitializeExtraInfo("INVALID_ESCAPE_SEQUENCE", optional_idx());
+		extra_info["hint"] = "Escape string must be empty or one character.";
+		throw SyntaxException(extra_info, "invalid escape string");
 	}
+}
+
+char GetEscapeChar(string_t escape) {
+	CheckEscapeString(escape);
 	return escape.GetSize() == 0 ? '\0' : *escape.GetData();
 }
 
@@ -853,6 +862,64 @@ void RegularLikeFunction(DataChunk &input, ExpressionState &state, Vector &resul
 	}
 }
 
+template <bool GLOB>
+bool PatternMinSize(const string &pattern, bool has_escape, char escape, idx_t &min_size) {
+	min_size = 0;
+	for (idx_t i = 0; i < pattern.size(); i++) {
+		auto c = pattern[i];
+		if (has_escape && c == escape) {
+			if (++i == pattern.size()) {
+				return false;
+			}
+		} else if (c == (GLOB ? '*' : '%')) {
+			continue;
+		} else if (GLOB && c == '[') {
+			min_size++;
+			return true;
+		}
+		min_size++;
+	}
+	return true;
+}
+
+template <bool GLOB>
+FilterPropagateResult PatternFilterPrune(const FunctionStatisticsPruneInput &input) {
+	auto &children = input.function.GetChildren();
+	if (children.size() < 2 || children[1]->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	bool has_escape = true;
+	char escape = '\\';
+	if (children.size() == 3) {
+		if (children[2]->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+			return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+		}
+		auto &escape_value = children[2]->Cast<BoundConstantExpression>().GetValue();
+		if (escape_value.IsNull() || StringValue::Get(escape_value).size() > 1) {
+			return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+		}
+		has_escape = !StringValue::Get(escape_value).empty();
+		escape = has_escape ? StringValue::Get(escape_value)[0] : '\0';
+	}
+	auto column_stats = input.ChildStats(0);
+	if (!column_stats || column_stats->GetStatsType() != StatisticsType::STRING_STATS) {
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	if (!column_stats->CanHaveNoNull()) {
+		return FilterPropagateResult::FILTER_ALWAYS_FALSE;
+	}
+	auto &pattern_value = children[1]->Cast<BoundConstantExpression>().GetValue();
+	if (pattern_value.IsNull()) {
+		return FilterPropagateResult::FILTER_ALWAYS_FALSE;
+	}
+	idx_t min_size = 0;
+	if (!PatternMinSize<GLOB>(StringValue::Get(pattern_value), has_escape, escape, min_size) ||
+	    !StringStats::HasMaxStringLength(*column_stats) || StringStats::MaxStringLength(*column_stats) >= min_size) {
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	return FilterPropagateResult::FILTER_ALWAYS_FALSE;
+}
+
 } // namespace
 
 ScalarFunction NotLikeFun::GetFunction() {
@@ -870,6 +937,7 @@ ScalarFunction GlobPatternFun::GetFunction() {
 	glob.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	glob.GetSignature().GetParameter(0).SetName("string");
 	glob.GetSignature().GetParameter(1).SetName("pattern");
+	glob.SetFilterPruneCallback(PatternFilterPrune<true>);
 	return glob;
 }
 
@@ -897,6 +965,7 @@ ScalarFunction LikeFun::GetFunction() {
 	like.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	like.GetSignature().GetParameter(0).SetName("string");
 	like.GetSignature().GetParameter(1).SetName("pattern");
+	like.SetFilterPruneCallback(PatternFilterPrune<false>);
 	return like;
 }
 
@@ -940,6 +1009,7 @@ ScalarFunction LikeEscapeFun::GetFunction() {
 	    .AddParameter("like_specifier", LogicalType::VARCHAR)
 	    .AddParameter("escape_character", LogicalType::VARCHAR);
 	like_escape.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	like_escape.SetFilterPruneCallback(PatternFilterPrune<false>);
 	return like_escape;
 }
 
@@ -974,6 +1044,7 @@ static string SimilarToRegex(const string_t &pattern_str, std::string_view escap
 					result += "){1,1}(?:";
 				} else {
 					throw InvalidInputException(
+					    Exception::InitializeExtraInfo("INVALID_USE_OF_ESCAPE_CHARACTER", optional_idx()),
 					    "SQL regular expression may not contain more than two escape-double-quote separators");
 				}
 				nquotes++;
@@ -1032,9 +1103,7 @@ static void SimilarToEscapeFunction(DataChunk &args, ExpressionState &, Vector &
 static void SimilarToEscapeWithEscapeFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, string_t>(
 	    args.data[0], args.data[1], result, args.size(), [&](string_t pattern, string_t escape) {
-		    if (escape.GetSize() > 1) {
-			    throw InvalidInputException("invalid escape string: must be one character");
-		    }
+		    CheckEscapeString(escape);
 		    return StringVector::AddString(
 		        result, SimilarToRegex(pattern, std::string_view {escape.GetData(), escape.GetSize()}));
 	    });
@@ -1046,6 +1115,7 @@ ScalarFunctionSet SimilarToEscapeFun::GetFunctions() {
 	    ScalarFunction({LogicalType::VARCHAR}, LogicalType::VARCHAR, SimilarToEscapeFunction));
 	similar_to_escape.AddFunction(ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
 	                                             SimilarToEscapeWithEscapeFunction));
+	similar_to_escape.SetFallible();
 	return similar_to_escape;
 }
 
