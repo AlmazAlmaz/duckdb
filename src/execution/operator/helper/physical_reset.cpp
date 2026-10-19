@@ -22,7 +22,7 @@ static bool CanResetAt(const ExtensionOption &option, SetScope effective_scope) 
 }
 
 void PhysicalReset::ResetExtensionVariable(ExecutionContext &context, DBConfig &config, const Identifier &name,
-                                           ExtensionOption &extension_option, SetScope effective_scope) const {
+                                           ExtensionOption &extension_option, SetScope effective_scope) {
 	// Compatibility: mirror the checks from PhysicalSet::SetExtensionVariable.
 	if (!CanResetAt(extension_option, effective_scope)) {
 		throw InvalidInputException("parameter \"%s\" cannot be reset locally", extension_option.description);
@@ -61,7 +61,7 @@ void PhysicalReset::ResetExtensionVariable(ExecutionContext &context, DBConfig &
 }
 
 void PhysicalReset::ResetOption(ExecutionContext &context, DBConfig &config, const ConfigurationOption &option,
-                                SetScope variable_scope) const {
+                                const char *name, SetScope variable_scope) {
 	config.CheckLock(option.name);
 
 	if (option.default_value) {
@@ -76,7 +76,7 @@ void PhysicalReset::ResetOption(ExecutionContext &context, DBConfig &config, con
 		// Gate the rollback observer on is_user_set so RESET ALL no-ops don't
 		// reach the sdb tracker.
 		if (context.client.setting_change_handler) {
-			context.client.setting_change_handler(context.client, option.name, variable_scope, nullptr);
+			context.client.setting_change_handler(context.client, name, variable_scope, nullptr);
 		}
 		if (option.set_callback) {
 			SettingCallbackInfo info(context.client, variable_scope);
@@ -98,7 +98,7 @@ void PhysicalReset::ResetOption(ExecutionContext &context, DBConfig &config, con
 			throw CatalogException("option \"%s\" cannot be reset globally", option.name);
 		}
 		if (context.client.setting_change_handler) {
-			context.client.setting_change_handler(context.client, option.name, variable_scope, nullptr);
+			context.client.setting_change_handler(context.client, name, variable_scope, nullptr);
 		}
 		auto &db = DatabaseInstance::GetDatabase(context.client);
 		config.ResetOption(&db, option);
@@ -119,7 +119,7 @@ void PhysicalReset::ResetOption(ExecutionContext &context, DBConfig &config, con
 		const bool had_post = context.client.TryGetCurrentSetting(option.name, post_value);
 		const bool changed = had_pre != had_post || !Value::NotDistinctFrom(pre_value, post_value);
 		if (changed && context.client.setting_change_handler) {
-			context.client.setting_change_handler(context.client, option.name, variable_scope, nullptr);
+			context.client.setting_change_handler(context.client, name, variable_scope, nullptr);
 		}
 		break;
 	}
@@ -143,18 +143,19 @@ SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataC
 		client_config.ResetUserVariable(name);
 		return SourceResultType::FINISHED;
 	}
-	auto &config = DBConfig::GetConfig(context.client);
 	if (name.empty()) {
-		ResetAll(context, config);
+		ResetAll(context, scope);
 		return SourceResultType::FINISHED;
 	}
+	auto &config = DBConfig::GetConfig(context.client);
 
 	// Single-target RESET: the handler call moved inside ResetOption /
 	// ResetExtensionVariable so no-op RESETs don't reach sdb's tracker.
 	Identifier option_name(name.ToStdString());
 	auto option = DBConfig::GetOptionByName(option_name);
 	if (option) {
-		ResetOption(context, config, *option, PhysicalSet::GetSettingScope(*option, scope));
+		ResetOption(context, config, *option, option_name.GetIdentifierName().c_str(),
+		            PhysicalSet::GetSettingScope(*option, scope));
 		return SourceResultType::FINISHED;
 	}
 	ExtensionOption extension_option;
@@ -169,10 +170,11 @@ SourceResultType PhysicalReset::GetDataInternal(ExecutionContext &context, DataC
 	return SourceResultType::FINISHED;
 }
 
-void PhysicalReset::ResetAll(ExecutionContext &context, DBConfig &config) const {
+void PhysicalReset::ResetAll(ExecutionContext &context, SetScope scope) {
 	// RESET ALL / RESET LOCAL ALL: reset every session-level option. Skip
 	// GLOBAL-scoped settings — those live DB-wide and PG's RESET ALL does not
 	// touch them.
+	auto &config = DBConfig::GetConfig(context.client);
 	auto options_count = DBConfig::GetOptionCount();
 	for (idx_t i = 0; i < options_count; i++) {
 		auto option = DBConfig::GetOptionByIndex(i);
@@ -183,7 +185,7 @@ void PhysicalReset::ResetAll(ExecutionContext &context, DBConfig &config) const 
 		if (variable_scope == SetScope::GLOBAL) {
 			continue;
 		}
-		ResetOption(context, config, *option, variable_scope);
+		ResetOption(context, config, *option, option->name, variable_scope);
 	}
 	for (auto &ext : config.GetExtensionSettings()) {
 		auto variable_scope = PhysicalSet::GetSettingScope(ext.second, scope);
