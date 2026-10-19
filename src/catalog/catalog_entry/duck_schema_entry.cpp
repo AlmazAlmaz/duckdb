@@ -619,8 +619,18 @@ void DuckSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
 			owned_sequences =
 			    SequencesOwnedByRemovedColumn(catalog, transaction, set, name, info.Cast<RemoveColumnInfo>());
 		}
+		auto previous =
+		    type == CatalogType::TABLE_ENTRY && transaction.transaction ? set.GetEntry(transaction, name) : nullptr;
 		if (!set.AlterEntry(transaction, name, info)) {
 			throw CatalogException::MissingEntry(type, name, string());
+		}
+		if (previous && previous->type == CatalogType::TABLE_ENTRY &&
+		    previous->Cast<TableCatalogEntry>().IsDuckTable()) {
+			auto new_name = info.GetNewName();
+			auto current = set.GetEntry(transaction, new_name ? *new_name : name);
+			if (current && current.get() != previous.get()) {
+				current->Cast<DuckTableEntry>().AlterDependentIndexes(transaction, previous->Cast<DuckTableEntry>());
+			}
 		}
 		if (info.type == AlterType::ALTER_PERMISSIONS && !info.Cast<AlterPermissionsInfo>().new_owner.empty() &&
 		    catalog.Compatibility() == SqlCompatibility::POSTGRES) {
