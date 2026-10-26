@@ -506,7 +506,7 @@ void DataTable::Scan(DuckTransaction &transaction, DataChunk &result, TableScanS
 }
 
 bool DataTable::CreateIndexScan(TableScanState &state, DataChunk &result) {
-	return state.table_state.Scan(result, TableScanType::TABLE_SCAN_OMIT_PERMANENTLY_DELETED);
+	return state.table_state.Scan(result, TableScanType::TABLE_SCAN_COMMITTED_ROWS);
 }
 
 //===--------------------------------------------------------------------===//
@@ -561,7 +561,8 @@ shared_ptr<IndexEntry> DataTable::AddBuiltIndex(DuckTransaction &transaction, un
 			error.Throw();
 		}
 	}
-	return info->indexes.AddIndex(std::move(index), index_oid, check_mode);
+	return info->indexes.AddIndex(std::move(index), index_oid, check_mode,
+	                              DuckTransactionManager::Get(db).GetLastCommit());
 }
 
 bool DataTable::HasForeignKeyIndex(std::span<const PhysicalIndex> keys, ForeignKeyType type) {
