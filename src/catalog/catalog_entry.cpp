@@ -1,6 +1,7 @@
 #include "duckdb/catalog/catalog_entry.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/standard_entry.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/main/database.hpp"
@@ -45,6 +46,9 @@ unique_ptr<CatalogEntry> CatalogEntry::AlterEntry(ClientContext &context, AlterI
 		auto result = Copy(context);
 		result->name = *new_name;
 		return result;
+	}
+	if (auto new_schema = info.GetNewSchema()) {
+		return Cast<StandardEntry>().CopyToSchema(context, *new_schema);
 	}
 	if (info.type == AlterType::SET_COMMENT) {
 		auto result = Copy(context);

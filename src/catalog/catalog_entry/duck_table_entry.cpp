@@ -390,7 +390,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::AlterEntry(ClientContext &context, Alte
 	if (info.type == AlterType::ALTER_PERMISSIONS) {
 		return AlterPermissions(context, info.Cast<AlterPermissionsInfo>());
 	}
-	if (info.GetNewName() && info.GetCatalogType() == CatalogType::TABLE_ENTRY) {
+	if ((info.GetNewName() || info.GetNewSchema()) && info.GetCatalogType() == CatalogType::TABLE_ENTRY) {
 		storage->GetDataTableInfo()->BindIndexes(context);
 		return CatalogEntry::AlterEntry(context, info);
 	}
@@ -482,7 +482,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::AlterEntry(ClientContext &context, Alte
 
 void DuckTableEntry::UndoAlter(ClientContext &context, AlterInfo &info) {
 	D_ASSERT(!internal);
-	D_ASSERT(info.GetNewName());
+	D_ASSERT(info.GetNewName() || info.GetNewSchema());
 	storage->SetTableName(this->name);
 }
 
@@ -1633,6 +1633,7 @@ void DuckTableEntry::SetAsRoot(optional_ptr<CatalogTransaction> transaction, opt
 	storage->SetAsMainTable();
 	storage->GetDataTableInfo()->SetTableOid(oid);
 	if (!catalog.UsesCatalogLog()) {
+		storage->GetDataTableInfo()->SetSchemaInfo(schema_info);
 		storage->SetTableName(name);
 		for (auto &column : columns.Physical()) {
 			storage->SetColumnName(column.Physical(), column.Name());

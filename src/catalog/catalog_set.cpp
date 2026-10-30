@@ -1,6 +1,7 @@
 #include "duckdb/catalog/catalog_set.hpp"
 #include "duckdb/transaction/transaction_data.hpp"
 
+#include "duckdb/catalog/catalog_entry/duck_schema_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/sequence_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
@@ -392,14 +393,20 @@ bool CatalogSet::AlterOwnership(CatalogTransaction transaction, ChangeOwnershipI
 	                                          entry.name.GetIdentifierName(), new_name.GetIdentifierName()));
 }
 
-bool CatalogSet::RenameEntryInternal(CatalogTransaction transaction, CatalogEntry &old, const Identifier &new_name,
-                                     AlterInfo &alter_info, unique_lock<mutex> &read_lock, bool namespace_vacant) {
+bool CatalogSet::RenameEntryInternal(CatalogTransaction transaction, CatalogEntry &old, CatalogSet &target,
+                                     const Identifier &new_name, AlterInfo &alter_info, unique_lock<mutex> &read_lock,
+                                     unique_lock<mutex> &target_lock, bool namespace_vacant) {
 	auto &original_name = old.name;
 
 	auto &context = *transaction.context;
-	auto entry_value = map.GetEntry(new_name);
-	if ((entry_value && !GetEntryForTransaction(transaction, *entry_value).deleted) || !namespace_vacant) {
+	auto entry_value = target.map.GetEntry(new_name);
+	const bool taken = entry_value ? !GetEntryForTransaction(transaction, *entry_value).deleted
+	                               : target.CreateDefaultEntry(transaction, new_name, target_lock);
+	if (taken || !namespace_vacant) {
 		old.UndoAlter(context, alter_info);
+		if (&target != this) {
+			throw CatalogException::EntryAlreadyExists(old.type, new_name);
+		}
 		ThrowRenameConflict(old, new_name);
 	}
 
@@ -422,8 +429,8 @@ bool CatalogSet::RenameEntryInternal(CatalogTransaction transaction, CatalogEntr
 	auto renamed_node = make_uniq<InCatalogEntry>(CatalogType::RENAMED_ENTRY, catalog, new_name);
 	renamed_node->timestamp = transaction.GetTransactionId();
 	renamed_node->deleted = false;
-	renamed_node->set = this;
-	return CreateEntryInternal(transaction, new_name, std::move(renamed_node), read_lock);
+	renamed_node->set = &target;
+	return target.CreateEntryInternal(transaction, new_name, std::move(renamed_node), target_lock);
 }
 
 static unique_ptr<StorageLockKey> LockTableStorage(CatalogEntry &entry) {
@@ -462,13 +469,22 @@ bool CatalogSet::AlterEntry(CatalogTransaction transaction, const Identifier &na
 	if (alter_info.type != AlterType::ALTER_PERMISSIONS) {
 		value->permissions = entry->permissions;
 	}
+	auto &target = alter_info.GetNewSchema()
+	                   ? value->ParentSchema(transaction).Cast<DuckSchemaEntry>().GetCatalogSet(value->type)
+	                   : *this;
 
 	// lock the catalog for writing
 	unique_lock<mutex> write_lock(catalog.GetWriteLock());
-	const bool renamed = !IdentifierEquality(map.IsCaseSensitive())(value->name, name);
-	const bool namespace_vacant = !renamed || NamespaceVacant(transaction, value->name);
+	const bool renamed = &target != this || !IdentifierEquality(map.IsCaseSensitive())(value->name, name);
+	const bool namespace_vacant = !renamed || target.NamespaceVacant(transaction, value->name);
 	// lock this catalog set to disallow reading
-	unique_lock<mutex> read_lock(catalog_lock);
+	unique_lock<mutex> read_lock(catalog_lock, std::defer_lock);
+	unique_lock<mutex> target_lock(target.catalog_lock, std::defer_lock);
+	if (&target != this) {
+		std::lock(read_lock, target_lock);
+	} else {
+		read_lock.lock();
+	}
 
 	// fetch the entry again before doing the modification
 	// this will catch any write-write conflicts between transactions
@@ -476,17 +492,18 @@ bool CatalogSet::AlterEntry(CatalogTransaction transaction, const Identifier &na
 
 	// Mark this entry as being created by this transaction
 	value->timestamp = transaction.GetTransactionId();
-	value->set = this;
+	value->set = &target;
 	// Preserve the oid across the alter: an altered entry is the same logical object as before
 	value->oid = entry->oid;
 
 	if (renamed) {
-		if (!RenameEntryInternal(transaction, *entry, value->name, alter_info, read_lock, namespace_vacant)) {
+		if (!RenameEntryInternal(transaction, *entry, target, value->name, alter_info, read_lock,
+		                         &target != this ? target_lock : read_lock, namespace_vacant)) {
 			return false;
 		}
 	}
 	auto new_entry = value.get();
-	map.UpdateEntry(std::move(value));
+	target.map.UpdateEntry(std::move(value));
 	GetCatalog().GetOidIndex().Install(*new_entry, *new_entry);
 
 	// push the old entry in the undo buffer for this transaction
@@ -515,6 +532,9 @@ bool CatalogSet::AlterEntry(CatalogTransaction transaction, const Identifier &na
 	new_entry->SetAsRoot(&transaction, entry);
 
 	read_lock.unlock();
+	if (target_lock.owns_lock()) {
+		target_lock.unlock();
+	}
 	write_lock.unlock();
 
 	// Check the dependency manager to verify that there are no conflicting dependencies with this alter

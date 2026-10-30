@@ -430,6 +430,23 @@
     ]
   },
   {
+    "class": "SetSchemaInfo",
+    "base": "AlterInfo",
+    "enum": "SET_SCHEMA",
+    "members": [
+      {
+        "id": 300,
+        "name": "entry_catalog_type",
+        "type": "CatalogType"
+      },
+      {
+        "id": 301,
+        "name": "new_schema",
+        "type": "Identifier"
+      }
+    ]
+  },
+  {
     "class": "ReplaceDefinitionInfo",
     "base": "AlterInfo",
     "enum": "REPLACE_DEFINITION",

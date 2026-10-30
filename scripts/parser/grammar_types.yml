@@ -248,6 +248,7 @@ AlterInfo:
   by_value: true
   rules:
     - AlterOptions
+    - AlterSetSchemaStmt
     - AlterTableStmt
     - AlterDatabaseStmt
     - AlterViewStmt
@@ -1464,6 +1465,9 @@ CatalogType:
     - CommentType
     - CommentColumn
     - TableOrView
+    - SetSchemaEntryType
+    - SetSchemaProcedure
+    - SetSchemaDictionary
     - MaterializedViewEntry
 
 

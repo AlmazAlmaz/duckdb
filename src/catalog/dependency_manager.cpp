@@ -501,6 +501,10 @@ static bool CascadeDrop(bool cascade, const DependencyDependentFlags &flags) {
 	return !flags.IsBlocking();
 }
 
+static bool FollowsSubject(const DependencyDependentFlags &flags) {
+	return CascadeDrop(false, flags) && !flags.IsAlterBlocking();
+}
+
 CatalogEntryInfo DependencyManager::GetLookupProperties(const CatalogEntry &entry) {
 	if (entry.type == CatalogType::DEPENDENCY_ENTRY) {
 		auto &dependency_entry = entry.Cast<DependencyEntry>();
@@ -1277,7 +1281,8 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 		return dep.Dependent().subdependencies.contains(SubDependency {AlterTableType::REMOVE_COLUMN, column});
 	};
 	string blockers;
-	const bool renamed = !IdentifierEquality(true)(old_obj.name, new_obj.name);
+	const bool renamed = !IdentifierEquality(true)(old_obj.name, new_obj.name) ||
+	                     !CatalogEntryInfo::SamePath(old_info.schema_path, new_info.schema_path);
 	vector<pair<reference<Catalog>, DependencyInfo>> foreign_edges;
 	// Other entries that depend on us
 	ScanAllDependents(transaction, old_info, [&](DependencyEntry &dep) {
@@ -1364,6 +1369,14 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 			}
 			break;
 		}
+		case AlterType::SET_SCHEMA: {
+			const auto &flags = dep.Dependent().flags;
+			const bool moved_with_owner = alter_info.GetCatalogType() != old_obj.type;
+			if (FollowsSubject(flags) || (flags.IsOwnedBy() && moved_with_owner)) {
+				disallow_alter = false;
+			}
+			break;
+		}
 		case AlterType::SET_COLUMN_COMMENT:
 		case AlterType::SET_COMMENT:
 		case AlterType::ALTER_PERMISSIONS:
@@ -1383,8 +1396,10 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 			break;
 		}
 
-		bool renames_owning_table = alter_info.type == AlterType::ALTER_TABLE &&
-		                            alter_info.Cast<AlterTableInfo>().alter_table_type == AlterTableType::RENAME_TABLE;
+		bool renames_owning_table =
+		    (alter_info.type == AlterType::ALTER_TABLE &&
+		     alter_info.Cast<AlterTableInfo>().alter_table_type == AlterTableType::RENAME_TABLE) ||
+		    alter_info.GetNewSchema();
 		if (dep.EntryInfo().type == CatalogType::TRIGGER_ENTRY && !dep.Dependent().flags.IsAlterBlocking() &&
 		    !renames_owning_table) {
 			// a trigger does not prevent altering the table it is defined on unless its body reads from it too
@@ -1522,6 +1537,26 @@ catalog_entry_vector_t DependencyManager::OwnedEntries(CatalogTransaction transa
 	lock_guard<mutex> write_lock(catalog.GetWriteLock());
 	ScanSubjects(transaction, GetLookupProperties(transaction, owner), [&](DependencyEntry &dep) {
 		if (!dep.Subject().flags.IsOwnership()) {
+			return;
+		}
+		auto entry = LookupEntry(transaction, dep);
+		if (entry) {
+			result.push_back(*entry);
+		}
+	});
+	return result;
+}
+
+catalog_entry_vector_t DependencyManager::FollowingDependents(CatalogTransaction transaction,
+                                                              const CatalogEntry &object) {
+	catalog_entry_vector_t result;
+	if (IsSystemEntry(object)) {
+		return result;
+	}
+	lock_guard<mutex> write_lock(catalog.GetWriteLock());
+	ScanDependents(transaction, GetLookupProperties(transaction, object), [&](DependencyEntry &dep) {
+		const auto &dependent = dep.Dependent();
+		if (!FollowsSubject(dependent.flags) || !dependent.entry.table.empty()) {
 			return;
 		}
 		auto entry = LookupEntry(transaction, dep);

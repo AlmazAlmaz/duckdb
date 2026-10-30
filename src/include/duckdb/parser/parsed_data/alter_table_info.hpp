@@ -71,6 +71,29 @@ public:
 	explicit SetCommentInfo();
 };
 
+//===--------------------------------------------------------------------===//
+// Set Schema
+//===--------------------------------------------------------------------===//
+struct SetSchemaInfo : public AlterInfo {
+	SetSchemaInfo(CatalogType entry_catalog_type, const AlterEntryData &data, Identifier new_schema);
+
+	CatalogType entry_catalog_type;
+	Identifier new_schema;
+
+public:
+	CatalogType GetCatalogType() const override;
+	unique_ptr<AlterInfo> Copy() const override;
+	string ToString() const override;
+	optional_ptr<const Identifier> GetNewSchema() const override {
+		return &new_schema;
+	}
+
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<AlterInfo> Deserialize(Deserializer &deserializer);
+
+	explicit SetSchemaInfo();
+};
+
 struct AlterPermissionsInfo : public AlterInfo {
 	AlterPermissionsInfo(CatalogType entry_catalog_type, QualifiedName entry_name);
 

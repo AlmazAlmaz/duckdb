@@ -177,8 +177,9 @@ private:
 	bool VerifyVacancy(CatalogTransaction transaction, CatalogEntry &entry);
 	//! Start the catalog entry chain with a dummy node
 	bool StartChain(CatalogTransaction transaction, const Identifier &name, unique_lock<mutex> &read_lock);
-	bool RenameEntryInternal(CatalogTransaction transaction, CatalogEntry &old, const Identifier &new_name,
-	                         AlterInfo &alter_info, unique_lock<mutex> &read_lock, bool namespace_vacant);
+	bool RenameEntryInternal(CatalogTransaction transaction, CatalogEntry &old, CatalogSet &target,
+	                         const Identifier &new_name, AlterInfo &alter_info, unique_lock<mutex> &read_lock,
+	                         unique_lock<mutex> &target_lock, bool namespace_vacant);
 	bool NamespaceVacant(CatalogTransaction transaction, const Identifier &name);
 
 private:

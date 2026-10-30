@@ -102,6 +102,7 @@ public:
 	void AddOwnership(CatalogTransaction transaction, CatalogEntry &owner, CatalogEntry &entry);
 	void RemoveOwnership(CatalogTransaction transaction, CatalogEntry &entry);
 	catalog_entry_vector_t OwnedEntries(CatalogTransaction transaction, const CatalogEntry &owner);
+	catalog_entry_vector_t FollowingDependents(CatalogTransaction transaction, const CatalogEntry &object);
 	optional_ptr<CatalogEntry> OwnerOf(CatalogTransaction transaction, CatalogEntry &entry);
 
 	using created_by_owner_t = std::function<bool(const CatalogEntry &owned)>;

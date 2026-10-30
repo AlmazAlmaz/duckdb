@@ -83,7 +83,7 @@ unique_ptr<CatalogEntry> SequenceCatalogEntry::AlterEntry(ClientContext &context
 	}
 	const bool restart = info.type == AlterType::ALTER_SEQUENCE &&
 	                     info.Cast<AlterSequenceInfo>().alter_sequence_type == AlterSequenceType::RESTART_SEQUENCE;
-	if (!restart && !info.GetNewName()) {
+	if (!restart && !info.GetNewName() && !info.GetNewSchema()) {
 		return CatalogEntry::AlterEntry(context, info);
 	}
 	auto result = unique_ptr_cast<CatalogEntry, SequenceCatalogEntry>(

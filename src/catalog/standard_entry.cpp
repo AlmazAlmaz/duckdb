@@ -3,6 +3,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_transaction.hpp"
+#include "duckdb/catalog/dependency_manager.hpp"
 
 namespace duckdb {
 
@@ -46,6 +47,23 @@ vector<Identifier> StandardEntry::ParentSchemaPath(CatalogTransaction transactio
 
 QualifiedName StandardEntry::GetQualifiedName(const Identifier &entry_name) const {
 	return QualifiedName::FromCatalogSchema(catalog.GetName(), schema_info->Path(), entry_name);
+}
+
+unique_ptr<CatalogEntry> StandardEntry::CopyToSchema(ClientContext &context, const Identifier &schema) const {
+	auto &target = catalog.GetSchema(context, schema);
+	auto result = Copy(context);
+	auto &moved = result->Cast<StandardEntry>();
+	moved.schema_info = target.GetSchemaInfo();
+	auto &dependency_manager = *catalog.GetDependencyManager();
+	auto transaction = catalog.GetCatalogTransaction(context);
+	LogicalDependencyList dependencies;
+	for (auto &dependency : moved.dependencies.Set()) {
+		dependencies.AddDependency(dependency.catalog == catalog.GetName()
+		                               ? dependency_manager.WithCurrentNames(transaction, dependency)
+		                               : dependency);
+	}
+	moved.dependencies = std::move(dependencies);
+	return result;
 }
 
 } // namespace duckdb

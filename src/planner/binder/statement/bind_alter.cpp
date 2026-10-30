@@ -121,6 +121,44 @@ static void BindAlterTypes(Binder &binder, AlterStatement &stmt) {
 	}
 }
 
+[[noreturn]] static void ThrowWrongKindForSetSchema(const string &message, const string &hint = string()) {
+	auto extra_info = Exception::InitializeExtraInfo("WRONG_OBJECT_TYPE", optional_idx());
+	if (!hint.empty()) {
+		extra_info["hint"] = hint;
+	}
+	throw CatalogException(extra_info, message);
+}
+
+template <class LOOKUP>
+static optional_ptr<CatalogEntry> BindSetSchemaEntry(SetSchemaInfo &info, const LOOKUP &lookup) {
+	const auto declared = info.entry_catalog_type;
+	vector<CatalogType> kinds {declared};
+	if (declared == CatalogType::TABLE_ENTRY) {
+		kinds.push_back(CatalogType::SEQUENCE_ENTRY);
+	} else if (declared == CatalogType::MACRO_ENTRY) {
+		kinds.push_back(CatalogType::TABLE_MACRO_ENTRY);
+	}
+	for (auto kind : kinds) {
+		auto entry = lookup(kind, OnEntryNotFound::RETURN_NULL);
+		if (!entry) {
+			continue;
+		}
+		if (declared == CatalogType::VIEW_ENTRY && entry->type != CatalogType::VIEW_ENTRY) {
+			ThrowWrongKindForSetSchema(StringUtil::Format("\"%s\" is not a view", entry->name.GetIdentifierName()));
+		}
+		info.entry_catalog_type = entry->type;
+		return entry;
+	}
+	if (declared == CatalogType::TABLE_ENTRY) {
+		if (auto index = lookup(CatalogType::INDEX_ENTRY, OnEntryNotFound::RETURN_NULL)) {
+			ThrowWrongKindForSetSchema(
+			    StringUtil::Format("cannot change schema of index \"%s\"", index->name.GetIdentifierName()),
+			    "Change the schema of the table instead.");
+		}
+	}
+	return lookup(declared, info.if_not_found);
+}
+
 BoundStatement Binder::Bind(AlterStatement &stmt) {
 	BoundStatement result;
 	result.names = {"Success"};
@@ -231,6 +269,8 @@ BoundStatement Binder::Bind(AlterStatement &stmt) {
 		if (!entry) {
 			entry = lookup(declared, stmt.info->if_not_found);
 		}
+	} else if (stmt.info->type == AlterType::SET_SCHEMA) {
+		entry = BindSetSchemaEntry(stmt.info->Cast<SetSchemaInfo>(), lookup);
 	} else {
 		// For any other ALTER, we retrieve the catalog entry directly.
 		entry = lookup(stmt.info->GetCatalogType(), stmt.info->if_not_found);

@@ -142,6 +142,24 @@ PEGTransformerFactory::TransformAlterTableStmt(PEGTransformer &transformer, cons
 	return std::move(result);
 }
 
+unique_ptr<AlterInfo> PEGTransformerFactory::TransformAlterSetSchemaStmt(PEGTransformer &transformer,
+                                                                         const CatalogType &set_schema_entry_type,
+                                                                         const optional<bool> &if_exists,
+                                                                         unique_ptr<BaseTableRef> base_table_name,
+                                                                         const Identifier &col_id) {
+	AlterEntryData data(base_table_name->GetQualifiedName(),
+	                    if_exists ? OnEntryNotFound::RETURN_NULL : OnEntryNotFound::THROW_EXCEPTION);
+	return make_uniq<SetSchemaInfo>(set_schema_entry_type, data, col_id);
+}
+
+CatalogType PEGTransformerFactory::TransformSetSchemaProcedure(PEGTransformer &transformer) {
+	return CatalogType::MACRO_ENTRY;
+}
+
+CatalogType PEGTransformerFactory::TransformSetSchemaDictionary(PEGTransformer &transformer) {
+	return CatalogType::TOKENIZER_ENTRY;
+}
+
 unique_ptr<AlterInfo> PEGTransformerFactory::TransformAlterDatabaseStmt(PEGTransformer &transformer,
                                                                         const optional<bool> &if_exists,
                                                                         const Identifier &identifier,
