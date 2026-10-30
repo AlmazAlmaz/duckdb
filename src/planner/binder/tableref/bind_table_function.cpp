@@ -353,6 +353,10 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 	if (table_function.get_virtual_columns) {
 		virtual_columns = table_function.get_virtual_columns(context, bind_data.get());
 	}
+	vector<column_t> row_id_columns;
+	if (table_function.get_row_id_columns) {
+		row_id_columns = table_function.get_row_id_columns(context, bind_data.get());
+	}
 
 	auto get = make_uniq<LogicalGet>(bind_index, table_function, std::move(bind_data), return_types, return_names,
 	                                 virtual_columns);
@@ -373,7 +377,8 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 
 	if (ref.with_ordinality == OrdinalityType::WITH_ORDINALITY && correlated_columns.empty()) {
 		bind_context.AddTableFunction(bind_index, Identifier(function_name), return_names, return_types,
-		                              get->GetMutableColumnIds(), get->GetTable().get(), std::move(virtual_columns));
+		                              get->GetMutableColumnIds(), get->GetTable().get(), std::move(virtual_columns),
+		                              std::move(row_id_columns));
 		AddPostgresSetofColumnAlias(bind_context, bind_index, setof_column_name);
 
 		auto window_index = GenerateTableIndex();
@@ -405,7 +410,8 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 	// now add the table function to the bind context so its columns can be bound
 	BoundStatement result;
 	bind_context.AddTableFunction(bind_index, Identifier(function_name), return_names, return_types,
-	                              get->GetMutableColumnIds(), get->GetTable().get(), std::move(virtual_columns));
+	                              get->GetMutableColumnIds(), get->GetTable().get(), std::move(virtual_columns),
+	                              std::move(row_id_columns));
 	AddPostgresSetofColumnAlias(bind_context, bind_index, setof_column_name);
 	result.names = std::move(return_names);
 	result.types = std::move(return_types);

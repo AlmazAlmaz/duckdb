@@ -798,9 +798,10 @@ void BindContext::AddBaseTable(TableIndex index, const Identifier &alias, const 
 
 void BindContext::AddTableFunction(TableIndex index, const Identifier &alias, const vector<Identifier> &names,
                                    const vector<LogicalType> &types, vector<ColumnIndex> &bound_column_ids,
-                                   optional_ptr<StandardEntry> entry, virtual_column_map_t virtual_columns) {
+                                   optional_ptr<StandardEntry> entry, virtual_column_map_t virtual_columns,
+                                   vector<column_t> row_id_columns) {
 	AddBinding(make_uniq<TableBinding>(GetEntryAlias(binder.context, alias, entry), types, names, bound_column_ids,
-	                                   entry, index, std::move(virtual_columns)));
+	                                   entry, index, std::move(virtual_columns), std::move(row_id_columns)));
 }
 
 static Identifier AddColumnNameToBinding(const Identifier &base_name, identifier_set_t &current_names) {

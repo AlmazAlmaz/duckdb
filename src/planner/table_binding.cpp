@@ -7,6 +7,8 @@
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/bind_context.hpp"
 #include "duckdb/planner/bound_query_node.hpp"
+#include "duckdb/function/cast/default_casts.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_lambdaref_expression.hpp"
@@ -183,10 +185,11 @@ optional_ptr<StandardEntry> EntryBinding::GetStandardEntry() {
 
 TableBinding::TableBinding(BindingAlias alias, vector<LogicalType> types_p, vector<Identifier> names_p,
                            vector<ColumnIndex> &bound_column_ids, optional_ptr<StandardEntry> entry, TableIndex index,
-                           virtual_column_map_t virtual_columns_p)
+                           virtual_column_map_t virtual_columns_p, vector<column_t> row_id_columns_p)
     : Binding(BindingType::TABLE, std::move(alias), std::move(types_p), std::move(names_p), index,
               EntryIsCaseSensitive(entry)),
-      bound_column_ids(bound_column_ids), entry(entry), virtual_columns(std::move(virtual_columns_p)) {
+      bound_column_ids(bound_column_ids), entry(entry), virtual_columns(std::move(virtual_columns_p)),
+      row_id_columns(std::move(row_id_columns_p)) {
 	for (auto &ventry : virtual_columns) {
 		auto idx = ventry.first;
 		auto &name = ventry.second.name;
@@ -330,6 +333,24 @@ BindResult TableBinding::Bind(ColumnRefExpression &colref, idx_t depth) {
 			auto oid = make_uniq<BoundConstantExpression>(Value::BIGINT(NumericCast<int64_t>(entry->oid)));
 			oid->SetAlias(Identifier(colref.GetName()));
 			return BindResult(std::move(oid));
+		}
+		if (column_index == COLUMN_IDENTIFIER_XMIN || column_index == COLUMN_IDENTIFIER_XMAX ||
+		    column_index == COLUMN_IDENTIFIER_CMIN || column_index == COLUMN_IDENTIFIER_CMAX) {
+			auto result =
+			    BoundCastExpression::Create(make_uniq<BoundConstantExpression>(Value::BIGINT(0)), ventry->second.type,
+			                                BoundCastInfo(DefaultCasts::ReinterpretCast));
+			result->SetAlias(Identifier(colref.GetName()));
+			return BindResult(std::move(result));
+		}
+		if (column_index == COLUMN_IDENTIFIER_CTID) {
+			auto row_id =
+			    !row_id_columns.empty() ? row_id_columns[0] : entry->Cast<TableCatalogEntry>().GetRowIdColumns()[0];
+			auto row_id_ref = make_uniq<BoundColumnRefExpression>(Identifier(colref.GetName()), LogicalType::ROW_TYPE,
+			                                                      GetColumnBinding(row_id), depth);
+			auto result = BoundCastExpression::Create(std::move(row_id_ref), ventry->second.type,
+			                                          BoundCastInfo(DefaultCasts::ReinterpretCast));
+			result->SetAlias(Identifier(colref.GetName()));
+			return BindResult(std::move(result));
 		}
 		// virtual column - fetch type from there
 		col_type = ventry->second.type;

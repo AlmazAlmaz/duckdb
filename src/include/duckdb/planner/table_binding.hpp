@@ -127,7 +127,7 @@ public:
 public:
 	TableBinding(BindingAlias alias, vector<LogicalType> types, vector<Identifier> names,
 	             vector<ColumnIndex> &bound_column_ids, optional_ptr<StandardEntry> entry, TableIndex index,
-	             virtual_column_map_t virtual_columns);
+	             virtual_column_map_t virtual_columns, vector<column_t> row_id_columns = {});
 
 	//! A reference to the set of bound column ids
 	vector<ColumnIndex> &bound_column_ids;
@@ -135,6 +135,7 @@ public:
 	optional_ptr<StandardEntry> entry;
 	//! Virtual columns
 	virtual_column_map_t virtual_columns;
+	vector<column_t> row_id_columns;
 
 public:
 	unique_ptr<ParsedExpression> ExpandGeneratedColumn(const Identifier &column_name);
