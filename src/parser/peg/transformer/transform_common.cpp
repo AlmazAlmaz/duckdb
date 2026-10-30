@@ -5,6 +5,7 @@
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/parser/expression/type_expression.hpp"
+#include "duckdb/parser/expression_depth_check.hpp"
 
 namespace duckdb {
 
@@ -68,9 +69,9 @@ LogicalType PEGTransformerFactory::TransformType(PEGTransformer &transformer,
 			}
 		}
 	}
-	if (transformer.MayExceedDepth() &&
-	    (type->GetExpressionClass() != ExpressionClass::TYPE || !type->Cast<TypeExpression>().GetChildren().empty())) {
-		transformer.type_depth_check.Verify(*type);
+	if (!type->Cast<TypeExpression>().GetChildren().empty()) {
+		ExpressionDepthCheck check;
+		check.Verify(*type);
 	}
 	return LogicalType::UNBOUND(std::move(type));
 }

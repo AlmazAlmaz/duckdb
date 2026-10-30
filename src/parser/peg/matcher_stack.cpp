@@ -1,9 +1,9 @@
 #include "duckdb/parser/peg/matcher_stack.hpp"
-#include "duckdb/common/exception/parser_exception.hpp"
+#include "duckdb/common/exception.hpp"
 
 #include <absl/cleanup/cleanup.h>
-#include "duckdb/common/limits.hpp"
 #include "duckdb/common/optional.hpp"
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/parser/peg/matcher/literal_choice_matcher.hpp"
 
 namespace duckdb {
@@ -67,14 +67,14 @@ bool MatchStackFrame::IsInitialized() const {
 	return static_cast<const OptionalMatcher &>(matcher).EmptyResult(state);
 }
 
-MatcherResult MatchStack::MatchMemoized(const Matcher &matcher, MatchState &state, idx_t depth) {
+MatcherResult MatchStack::MatchMemoized(const Matcher &matcher, MatchState &state) {
 	PackratMatchState packrat_state;
 	auto cached_result = packrat_state.TryLoadCachedResult(matcher, state);
 	if (cached_result) {
 		return *cached_result;
 	}
 	auto result = matcher.IsAtomic() ? static_cast<const AtomicMatcher &>(matcher).MatchAtomic(state)
-	                                 : MatchComposite(matcher, state, depth);
+	                                 : MatchComposite(matcher, state);
 	packrat_state.StoreResult(matcher, state, result);
 	return result;
 }
@@ -85,50 +85,51 @@ MatcherResult MatchStack::ExecuteAtomicMatcher(MatchInput input) {
 	D_ASSERT(matcher.IsAtomic());
 	state.rule = matcher.GetRule();
 	if (PackratMatchState::IsEnabled(matcher, state)) {
-		return MatchMemoized(matcher, state, 0);
+		return MatchMemoized(matcher, state);
 	}
 	return static_cast<const AtomicMatcher &>(matcher).MatchAtomic(state);
 }
 
-MatcherResult MatchStack::MatchChild(const Matcher &matcher, MatchState &state, idx_t depth) {
+MatcherResult MatchStack::MatchChild(const Matcher &matcher, MatchState &state) {
 	if (!matcher.IsAtomic() && !matcher.CanStartAt(state)) {
 		return MatcherResult::Failure();
 	}
-	return MatchStartedChild(matcher, state, depth);
+	return MatchStartedChild(matcher, state);
 }
 
-MatcherResult MatchStack::MatchStartedChild(const Matcher &matcher, MatchState &state, idx_t depth) {
+MatcherResult MatchStack::MatchStartedChild(const Matcher &matcher, MatchState &state) {
 	if (matcher.IsAtomic()) {
 		return ExecuteAtomicMatcher({matcher, state});
 	}
 	if (IsEmptyOptional(matcher, state)) {
 		return EmptyOptional(matcher, state);
 	}
-	return Match(matcher, state, depth + 1);
+	return Match(matcher, state);
 }
 
-MatcherResult MatchStack::Match(const Matcher &matcher, MatchState &state, idx_t depth) {
-	if (depth >= recursion_limit || !matcher.HasBuiltInMatch()) {
-		return ExecuteFrames({matcher, state}, depth);
+MatcherResult MatchStack::Match(const Matcher &matcher, MatchState &state) {
+	StackDepth::Check();
+	if (!matcher.HasBuiltInMatch()) {
+		return ExecuteFrames({matcher, state});
 	}
 	state.rule = matcher.GetRule();
 	if (PackratMatchState::IsEnabled(matcher, state)) {
-		return MatchMemoized(matcher, state, depth);
+		return MatchMemoized(matcher, state);
 	}
-	return MatchComposite(matcher, state, depth);
+	return MatchComposite(matcher, state);
 }
 
-MatcherResult MatchStack::MatchComposite(const Matcher &matcher, MatchState &state, idx_t depth) {
+MatcherResult MatchStack::MatchComposite(const Matcher &matcher, MatchState &state) {
 	switch (matcher.Type()) {
 	case MatcherType::LIST:
-		return MatchList(static_cast<const ListMatcher &>(matcher), state, depth);
+		return MatchList(static_cast<const ListMatcher &>(matcher), state);
 	case MatcherType::OPTIONAL:
-		return MatchOptional(static_cast<const OptionalMatcher &>(matcher), state, depth);
+		return MatchOptional(static_cast<const OptionalMatcher &>(matcher), state);
 	case MatcherType::CHOICE:
-		return MatchChoice(static_cast<const ChoiceMatcher &>(matcher), state, depth);
+		return MatchChoice(static_cast<const ChoiceMatcher &>(matcher), state);
 	default:
 		D_ASSERT(matcher.Type() == MatcherType::REPEAT);
-		return MatchRepeat(static_cast<const RepeatMatcher &>(matcher), state, depth);
+		return MatchRepeat(static_cast<const RepeatMatcher &>(matcher), state);
 	}
 }
 
@@ -137,12 +138,12 @@ static optional_idx StartOffset(const MatchState &state) {
 	return current ? optional_idx(current->offset) : optional_idx();
 }
 
-MatcherResult MatchStack::MatchList(const ListMatcher &matcher, MatchState &state, idx_t depth) {
+MatcherResult MatchStack::MatchList(const ListMatcher &matcher, MatchState &state) {
 	if (matcher.chain_core.IsValid() && state.BuildParseResult() && !matcher.suppress_suggestions) {
-		return MatchChainLevel(matcher, state, depth);
+		return MatchChainLevel(matcher, state);
 	}
 	MatchState list_state(state);
-	return ContinueList(matcher, state, list_state, state.context.allocator.ChildCount(), 0, depth);
+	return ContinueList(matcher, state, list_state, state.context.allocator.ChildCount(), 0);
 }
 
 [[gnu::always_inline]] static inline bool PrefixesEmpty(const ListMatcher &matcher, MatchState &state) {
@@ -157,7 +158,7 @@ MatcherResult MatchStack::MatchList(const ListMatcher &matcher, MatchState &stat
 }
 
 MatcherResult MatchStack::CloseChainLevel(const ListMatcher &matcher, MatchState &state, MatchState &list_state,
-                                          MatcherResult core_result, idx_t depth, bool nested, bool suffixes_empty) {
+                                          MatcherResult core_result, bool nested, bool suffixes_empty) {
 	auto &children = matcher.matchers;
 	auto core_index = matcher.chain_core.GetIndex();
 	auto end = suffixes_empty ? children.size() : core_index + 1;
@@ -177,19 +178,19 @@ MatcherResult MatchStack::CloseChainLevel(const ListMatcher &matcher, MatchState
 		}
 	}
 	if (!nested) {
-		return ContinueList(matcher, state, list_state, children_begin, end, depth);
+		return ContinueList(matcher, state, list_state, children_begin, end);
 	}
 	MatchState level_state(state);
 	level_state.rule = matcher.GetRule();
-	return ContinueList(matcher, level_state, list_state, children_begin, end, depth);
+	return ContinueList(matcher, level_state, list_state, children_begin, end);
 }
 
-MatcherResult MatchStack::MatchChainLevel(const ListMatcher &matcher, MatchState &state, idx_t depth) {
+MatcherResult MatchStack::MatchChainLevel(const ListMatcher &matcher, MatchState &state) {
 	auto edges = matcher.chain_edges;
 	auto prefixes_empty = edges && edges->prefixes.NoneCanStartAt(state);
 	if (!prefixes_empty && !PrefixesEmpty(matcher, state)) {
 		MatchState list_state(state);
-		return ContinueList(matcher, state, list_state, state.context.allocator.ChildCount(), 0, depth);
+		return ContinueList(matcher, state, list_state, state.context.allocator.ChildCount(), 0);
 	}
 	MatchState list_state(state);
 	const ListMatcher *outer_levels[MAX_CHAIN_LEVELS];
@@ -197,7 +198,7 @@ MatcherResult MatchStack::MatchChainLevel(const ListMatcher &matcher, MatchState
 	auto level = &matcher;
 	while (nesting < MAX_CHAIN_LEVELS) {
 		auto nested_level = level->nested_chain_level;
-		if (!nested_level || depth + nesting + 1 >= recursion_limit) {
+		if (!nested_level) {
 			break;
 		}
 		if (!nested_level->CanStartAt(list_state)) {
@@ -210,13 +211,13 @@ MatcherResult MatchStack::MatchChainLevel(const ListMatcher &matcher, MatchState
 		outer_levels[nesting++] = level;
 		level = nested_level.get();
 	}
-	auto result = MatchChild(level->matchers[level->chain_core.GetIndex()], list_state, depth + nesting);
+	auto result = MatchChild(level->matchers[level->chain_core.GetIndex()], list_state);
 	auto suffixes_empty = edges && result.IsSuccess() && edges->suffixes.NoneCanStartAt(list_state);
 	while (true) {
 		if (!result.IsSuccess()) {
 			return MatcherResult::Failure();
 		}
-		result = CloseChainLevel(*level, state, list_state, result, depth + nesting, nesting > 0, suffixes_empty);
+		result = CloseChainLevel(*level, state, list_state, result, nesting > 0, suffixes_empty);
 		if (nesting == 0) {
 			break;
 		}
@@ -229,7 +230,7 @@ MatcherResult MatchStack::MatchChainLevel(const ListMatcher &matcher, MatchState
 }
 
 MatcherResult MatchStack::ContinueList(const ListMatcher &matcher, MatchState &state, MatchState &list_state,
-                                       idx_t children_begin, idx_t next_child, idx_t depth) {
+                                       idx_t children_begin, idx_t next_child) {
 	auto &allocator = state.context.allocator;
 	auto &suggestions = state.context.suggestions;
 	auto saved_suggestion_size = matcher.suppress_suggestions ? suggestions.size() : 0;
@@ -250,7 +251,7 @@ MatcherResult MatchStack::ContinueList(const ListMatcher &matcher, MatchState &s
 			allocator.DiscardChildren(children_begin);
 			return MatcherResult::Failure();
 		}
-		auto child_result = MatchChild(child, list_state, depth);
+		auto child_result = MatchChild(child, list_state);
 		if (!child_result.IsSuccess()) {
 			matcher.DiscardSuggestions(suggestions, saved_suggestion_size);
 			allocator.DiscardChildren(children_begin);
@@ -274,7 +275,7 @@ MatcherResult MatchStack::ContinueList(const ListMatcher &matcher, MatchState &s
 	return state.AllocateParseResult<ListParseResult>(children, start_offset);
 }
 
-MatcherResult MatchStack::MatchChoice(const ChoiceMatcher &matcher, MatchState &state, idx_t depth) {
+MatcherResult MatchStack::MatchChoice(const ChoiceMatcher &matcher, MatchState &state) {
 	idx_t child_index = 0;
 	idx_t child_end = matcher.matchers.size();
 	if (matcher.dispatch_on_literal) {
@@ -287,7 +288,7 @@ MatcherResult MatchStack::MatchChoice(const ChoiceMatcher &matcher, MatchState &
 			continue;
 		}
 		MatchState child_state(state);
-		auto child_result = MatchStartedChild(child, child_state, depth);
+		auto child_result = MatchStartedChild(child, child_state);
 		if (!child_result.IsSuccess()) {
 			continue;
 		}
@@ -302,10 +303,10 @@ MatcherResult MatchStack::MatchChoice(const ChoiceMatcher &matcher, MatchState &
 	return MatcherResult::Failure();
 }
 
-MatcherResult MatchStack::MatchOptional(const OptionalMatcher &matcher, MatchState &state, idx_t depth) {
+MatcherResult MatchStack::MatchOptional(const OptionalMatcher &matcher, MatchState &state) {
 	MatchState child_state(state);
 	auto start_offset = StartOffset(child_state);
-	auto child_result = MatchChild(matcher.GetChildMatcher(), child_state, depth);
+	auto child_result = MatchChild(matcher.GetChildMatcher(), child_state);
 	if (!child_result.IsSuccess()) {
 		return matcher.EmptyResult(state);
 	}
@@ -316,13 +317,13 @@ MatcherResult MatchStack::MatchOptional(const OptionalMatcher &matcher, MatchSta
 	return state.AllocateParseResult<OptionalParseResult>(child_result.GetParseResult(), start_offset);
 }
 
-MatcherResult MatchStack::MatchRepeat(const RepeatMatcher &matcher, MatchState &state, idx_t depth) {
+MatcherResult MatchStack::MatchRepeat(const RepeatMatcher &matcher, MatchState &state) {
 	auto &allocator = state.context.allocator;
 	auto &child = matcher.GetChildMatcher();
 	MatchState repeat_state(state);
 	auto children_begin = allocator.ChildCount();
 	auto start_offset = StartOffset(repeat_state);
-	auto child_result = MatchChild(child, repeat_state, depth);
+	auto child_result = MatchChild(child, repeat_state);
 	if (!child_result.IsSuccess()) {
 		return MatcherResult::Failure();
 	}
@@ -336,7 +337,7 @@ MatcherResult MatchStack::MatchRepeat(const RepeatMatcher &matcher, MatchState &
 			child.AddSuggestion(state);
 			break;
 		}
-		child_result = MatchChild(child, repeat_state, depth);
+		child_result = MatchChild(child, repeat_state);
 		if (!child_result.IsSuccess()) {
 			break;
 		}
@@ -346,9 +347,6 @@ MatcherResult MatchStack::MatchRepeat(const RepeatMatcher &matcher, MatchState &
 }
 
 void MatchStack::PushFrame(MatchInput input) {
-	if (frames.size() == frames.capacity() && frames.size() >= frame_limit) {
-		ParserException::ThrowMaxExpressionDepth(input.state.context.max_expression_depth);
-	}
 	input.state.rule = input.matcher.GetRule();
 	frames.emplace_back(input);
 }
@@ -414,18 +412,11 @@ MatcherResult MatchStack::Execute(MatchInput input) {
 	if (input.matcher.IsAtomic()) {
 		return ExecuteAtomicMatcher(input);
 	}
-	auto max_expression_depth = input.state.context.max_expression_depth;
-	max_frames = max_expression_depth > NumericLimits<idx_t>::Maximum() / FRAMES_PER_EXPRESSION_LEVEL
-	                 ? NumericLimits<idx_t>::Maximum()
-	                 : max_expression_depth * FRAMES_PER_EXPRESSION_LEVEL;
-	recursion_limit = MinValue(max_frames, MAX_RECURSION_DEPTH);
-	return Match(input.matcher, input.state, 0);
+	return Match(input.matcher, input.state);
 }
 
-MatcherResult MatchStack::ExecuteFrames(MatchInput input, idx_t depth) {
+MatcherResult MatchStack::ExecuteFrames(MatchInput input) {
 	D_ASSERT(frames.empty());
-	D_ASSERT(depth <= max_frames);
-	frame_limit = max_frames - depth;
 	if (frames.capacity() == 0) {
 		frames.reserve(INITIAL_FRAME_CAPACITY);
 	}

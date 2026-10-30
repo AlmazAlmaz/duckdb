@@ -522,8 +522,6 @@ private:
 	CatalogEntryRetriever entry_retriever;
 	//! Unnamed subquery index
 	idx_t unnamed_subquery_index = 1;
-	//! Binder depth
-	idx_t depth;
 	struct CTEChain {
 		explicit CTEChain(Binder &root_p) : root(root_p) {
 		}
@@ -536,10 +534,6 @@ private:
 	idx_t cte_chain_position = 0;
 
 private:
-	//! Determine the depth of the binder
-	idx_t GetBinderDepth() const;
-	//! Increase the depth of the binder
-	void IncreaseDepth();
 	//! Bind the expressions of generated columns to check for errors
 	void BindGeneratedColumns(BoundCreateTableInfo &info);
 	//! Bind the default values of the columns of a table

@@ -2,6 +2,7 @@
 #include "duckdb/common/types/geometry_crs.hpp"
 #include "duckdb/common/extension_type_info.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -262,6 +263,7 @@ const char *BuiltinTypeName(LogicalTypeId id) {
 } // namespace
 
 unique_ptr<TypeExpression> TypeExpression::FromLogicalType(const LogicalType &type) {
+	StackDepth::Check();
 	if (type.IsUnbound()) {
 		auto &expr = UnboundType::GetTypeExpression(type);
 		if (expr->GetExpressionClass() != ExpressionClass::TYPE) {

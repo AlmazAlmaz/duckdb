@@ -1,4 +1,5 @@
 #include "duckdb/common/multi_file/multi_file_column_mapper.hpp"
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -939,6 +940,7 @@ struct RewrittenMappedExpression {
 static RewrittenMappedExpression RewriteMappedValueExpression(const Expression &expr,
                                                               const MultiFileIndexMapping &mapping,
                                                               const LogicalType &target_type) {
+	StackDepth::Check();
 	RewrittenMappedExpression result;
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_REF:

@@ -6,6 +6,7 @@
 #include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/enums/catalog_type.hpp"
 #include "duckdb/common/enums/on_entry_not_found.hpp"
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
@@ -258,6 +259,7 @@ void RemotePushdownOptimizer::Rewrite(unique_ptr<SQLStatement> &statement) {
 }
 
 CatalogPushdownResult RemotePushdownOptimizer::Rewrite(QueryNode &node) {
+	StackDepth::Check();
 	if (!cte_results.empty()) {
 		throw InternalException(
 		    "RemotePushdownOptimizer already has CTEs defined - this means no child was created correctly");
@@ -810,6 +812,7 @@ void RemotePushdownOptimizer::TrackLocalTable(const TableRef &ref) {
 }
 
 CatalogPushdownResult RemotePushdownOptimizer::Rewrite(unique_ptr<TableRef> &ref) {
+	StackDepth::Check();
 	CatalogPushdownResult result;
 	switch (ref->type) {
 	case TableReferenceType::BASE_TABLE:
@@ -1279,6 +1282,7 @@ ExpressionPushdownResult RemotePushdownOptimizer::AnalyzeExpression(const Parsed
 
 ExpressionPushdownResult RemotePushdownOptimizer::RewriteExpression(unique_ptr<ParsedExpression> &expr,
                                                                     ExpressionFoldingMode mode) {
+	StackDepth::Check();
 	// rewrite the children - foldable subtrees are folded at the last possible moment, so that
 	// every maximal foldable subtree is bound and evaluated exactly once
 	auto result = CatalogPushdownResult::NoCatalogReference();
@@ -1367,6 +1371,7 @@ static void StripCatalogFromName(QualifiedName &name, const Identifier &catalog_
 }
 
 void RemotePushdownOptimizer::StripCatalogName(TableRef &ref, const Identifier &catalog_name) {
+	StackDepth::Check();
 	switch (ref.type) {
 	case TableReferenceType::BASE_TABLE: {
 		auto &base = ref.Cast<BaseTableRef>();
@@ -1411,6 +1416,7 @@ void RemotePushdownOptimizer::StripCatalogName(TableRef &ref, const Identifier &
 }
 
 void RemotePushdownOptimizer::StripCatalogName(ParsedExpression &expr, const Identifier &catalog_name) {
+	StackDepth::Check();
 	if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
 		auto &col_ref = expr.Cast<ColumnRefExpression>();
 		// Strip the catalog prefix from qualified column references, keeping everything after it.
@@ -1478,6 +1484,7 @@ void RemotePushdownOptimizer::StripCatalogName(ParsedExpression &expr, const Ide
 }
 
 void RemotePushdownOptimizer::StripCatalogName(QueryNode &node, const Identifier &catalog_name) {
+	StackDepth::Check();
 	switch (node.type) {
 	case QueryNodeType::SELECT_NODE: {
 		auto &select = node.Cast<SelectNode>();

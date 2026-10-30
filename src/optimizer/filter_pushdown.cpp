@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/optimizer/filter_combiner.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -111,6 +112,7 @@ vector<unique_ptr<Expression>> FilterPushdown::ExtractBarrierFilters() {
 }
 
 unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> op) {
+	StackDepth::Check();
 	D_ASSERT(!combiner.HasFilters());
 	if (!BarrierCanPassThrough(op->type)) {
 		// this operator can remove rows - barred expressions must be evaluated on top of it instead of below it

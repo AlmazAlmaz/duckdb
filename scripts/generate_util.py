@@ -16,6 +16,7 @@ HEADER = '''//===---------------------------------------------------------------
 #include "duckdb/common/types/hash.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/parser/result_modifier.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 
@@ -242,7 +243,7 @@ def generate_base_equals_bridge():
 
 
 def generate_base_equals_virtual(base_entry):
-    lines = ['bool ParsedExpression::Equals(const ParsedExpression &other) const {']
+    lines = ['bool ParsedExpression::Equals(const ParsedExpression &other) const {', '\tStackDepth::Check();']
     comparable = [m for m in base_entry.get('members', []) if member_should_be_compared(m)]
     if comparable:
         lines.append('\tauto &other_p = other;')
@@ -368,7 +369,7 @@ def generate_subclass_copy(entry):
             '}',
         ]
 
-    lines = [f'unique_ptr<ParsedExpression> {class_name}::Copy() const {{']
+    lines = [f'unique_ptr<ParsedExpression> {class_name}::Copy() const {{', '\tStackDepth::Check();']
     lines.append(f'\tauto copy = duckdb::unique_ptr<{class_name}>(new {class_name}());')
 
     if class_name == 'FunctionExpression' or class_name == 'WindowExpression':

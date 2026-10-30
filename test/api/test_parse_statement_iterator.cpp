@@ -340,3 +340,15 @@ TEST_CASE("StatementIterator: movable", "[api][statement_iterator]") {
 	REQUIRE(moved.GetStatement());
 	REQUIRE_FALSE(moved.Peek());
 }
+
+TEST_CASE("Parser: a moved parser keeps its statements and parses on", "[api][parser]") {
+	auto parser = Parser::GetBuiltinParser();
+	parser.ParseQuery("SELECT 6; SELECT 7");
+
+	Parser moved(std::move(parser));
+	REQUIRE(moved.statements.size() == 2);
+	REQUIRE(moved.statements[1]->ToString() == "SELECT 7");
+
+	moved.ParseQuery("SELECT 67");
+	REQUIRE(moved.statements.size() == 3);
+}

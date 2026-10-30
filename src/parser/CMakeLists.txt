@@ -20,6 +20,7 @@ add_library_unity(
   literal.cpp
   parsed_expression.cpp
   parsed_expression_iterator.cpp
+  parse_tree_delete.cpp
   parser.cpp
   qualified_name.cpp
   query_error_context.cpp

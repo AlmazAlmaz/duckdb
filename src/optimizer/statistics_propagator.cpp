@@ -1,5 +1,6 @@
 #include "duckdb/optimizer/statistics_propagator.hpp"
 
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/compressed_materialization.hpp"
@@ -115,6 +116,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOper
 }
 
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(unique_ptr<LogicalOperator> &node_ptr) {
+	StackDepth::Check();
 	path.push_back(node_ptr);
 	auto result = PropagateStatistics(*node_ptr, node_ptr);
 	path.pop_back();

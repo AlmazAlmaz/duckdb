@@ -1,6 +1,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -24,6 +25,7 @@ BindResult ExpressionBinder::BindExpression(TypeExpression &type_expr, idx_t dep
 }
 
 LogicalType ExpressionBinder::BindTypeExpression(TypeExpression &type_expr) {
+	StackDepth::Check();
 	if (type_expr.GetBoundType().id() != LogicalTypeId::INVALID) {
 		return type_expr.GetBoundType();
 	}

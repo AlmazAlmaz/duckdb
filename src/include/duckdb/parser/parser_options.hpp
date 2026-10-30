@@ -24,8 +24,6 @@ private:
 	friend class ClientContext;
 
 public:
-	static constexpr idx_t DEFAULT_MAX_EXPRESSION_DEPTH = 1000;
-
 	//! Explicit configuration for parsing without a client context.
 	DUCKDB_API static ParserOptions Builtin();
 
@@ -33,7 +31,6 @@ public:
 	IdentifierCaseMode identifier_case_mode = IdentifierCaseMode::PRESERVE_CASE;
 	bool integer_division = false;
 	RegexMatchOperatorSemantics regex_match_operator_semantics = RegexMatchOperatorSemantics::PARTIAL;
-	idx_t max_expression_depth = DEFAULT_MAX_EXPRESSION_DEPTH;
 	optional_ptr<const CompiledGrammar> grammar;
 };
 

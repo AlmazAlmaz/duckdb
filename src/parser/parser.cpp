@@ -3,6 +3,7 @@
 #include "duckdb/parser/peg/keyword_helper/duckdb_keyword_helper.hpp"
 
 #include "duckdb/common/limits.hpp"
+#include "duckdb/parser/expression_depth_check.hpp"
 #include "duckdb/parser/group_by_node.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/token_iterator.hpp"
@@ -39,12 +40,11 @@
 
 namespace duckdb {
 
-Parser::Parser(const ParserOptions &options_p) : options(options_p), depth_check {options_p.max_expression_depth, {}} {
+Parser::Parser(const ParserOptions &options_p) : options(options_p) {
 }
 
 Parser::~Parser() = default;
-Parser::Parser(Parser &&other) noexcept
-    : statements(std::move(other.statements)), options(other.options), depth_check(std::move(other.depth_check)) {
+Parser::Parser(Parser &&other) noexcept : statements(std::move(other.statements)), options(other.options) {
 }
 
 ParserOptions ParserOptions::Builtin() {
@@ -389,12 +389,13 @@ unique_ptr<SQLStatement> Parser::ParseTopLevelStatement(TokenIterator &token_ite
 	if (!statement) {
 		return statement;
 	}
-	if (height > options.max_expression_depth) {
-		VerifyStatementDepth(*statement, depth_check);
+	if (height > SHALLOW_STATEMENT_HEIGHT) {
+		ExpressionDepthCheck check;
+		VerifyStatementDepth(*statement, check);
 	} else {
 #ifdef D_ASSERT_IS_ENABLED
 		if (DUCKDB_DEBUG_VERIFY_ENABLED()) {
-			ExpressionDepthCheck measure {NumericLimits<idx_t>::Maximum(), {}};
+			ExpressionDepthCheck measure;
 			VerifyStatementDepth(*statement, measure);
 			D_ASSERT(measure.deepest <= height);
 		}

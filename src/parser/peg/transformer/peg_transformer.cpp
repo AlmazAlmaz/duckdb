@@ -2,6 +2,7 @@
 
 #include "duckdb/common/exception/parser_exception.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/parser/expression_depth_check.hpp"
 #include "duckdb/parser/peg/compiled_grammar.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
@@ -320,9 +321,6 @@ arena_ptr<TransformResultValue> TransformStack::ExecuteFrame(TransformStackFrame
 arena_ptr<TransformResultValue>
 TransformStack::FinishFrame(TransformStackFrame &frame, arena_ptr<TransformResultValue> result, idx_t &result_height) {
 	result_height = frame.height + 1;
-	if (result_height >= transformer.max_height) {
-		ParserException::ThrowMaxExpressionDepth(transformer.options.max_expression_depth);
-	}
 #ifdef D_ASSERT_IS_ENABLED
 	transformer.VerifyResultHeight(frame.parse_result, *result, result_height);
 #endif
@@ -461,34 +459,17 @@ arena_ptr<TransformResultValue> PEGTransformer::TransformInternal(ParseResult &p
 
 PEGTransformer::PEGTransformer(ArenaAllocator &allocator, TokenIterator &token_iterator, ParserOptions &options_p,
                                const CompiledGrammar &grammar_p)
-    : allocator(allocator), token_iterator(token_iterator), type_depth_check {options_p.max_expression_depth, {}},
-      options(options_p), grammar(grammar_p),
-      max_height(options_p.max_expression_depth > NumericLimits<idx_t>::Maximum() / HEIGHT_PER_EXPRESSION_LEVEL
-                     ? NumericLimits<idx_t>::Maximum()
-                     : options_p.max_expression_depth * HEIGHT_PER_EXPRESSION_LEVEL) {
+    : allocator(allocator), token_iterator(token_iterator), options(options_p), grammar(grammar_p) {
 }
 
 void PEGTransformer::AddDepth(idx_t levels) {
-	if (levels >= options.max_expression_depth) {
-		ParserException::ThrowMaxExpressionDepth(options.max_expression_depth);
-	}
-	if (!running_frame) {
-		return;
-	}
 	running_frame->height += levels;
-	if (running_frame->height >= max_height) {
-		ParserException::ThrowMaxExpressionDepth(options.max_expression_depth);
-	}
-}
-
-bool PEGTransformer::MayExceedDepth() const {
-	return !running_frame || running_frame->height > options.max_expression_depth;
 }
 
 #ifdef D_ASSERT_IS_ENABLED
 void PEGTransformer::VerifyResultHeight(const ParseResult &parse_result, TransformResultValue &result, idx_t height) {
 	DUCKDB_DEBUG_VERIFY_GUARD();
-	ExpressionDepthCheck measure {NumericLimits<idx_t>::Maximum(), {}};
+	ExpressionDepthCheck measure;
 	auto verify = [&](ParsedExpression *expr) {
 		if (expr) {
 			measure.Verify(*expr);

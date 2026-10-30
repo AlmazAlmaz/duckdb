@@ -55,26 +55,24 @@ public:
 
 private:
 	static constexpr idx_t INITIAL_FRAME_CAPACITY = 64;
-	static constexpr idx_t FRAMES_PER_EXPRESSION_LEVEL = 64;
-	static constexpr idx_t MAX_RECURSION_DEPTH = 1024;
 	static constexpr idx_t MAX_CHAIN_LEVELS = 32;
 
-	[[gnu::always_inline]] MatcherResult MatchChild(const Matcher &matcher, MatchState &state, idx_t depth);
-	[[gnu::always_inline]] MatcherResult MatchStartedChild(const Matcher &matcher, MatchState &state, idx_t depth);
-	MatcherResult Match(const Matcher &matcher, MatchState &state, idx_t depth);
-	MatcherResult MatchComposite(const Matcher &matcher, MatchState &state, idx_t depth);
-	MatcherResult MatchList(const ListMatcher &matcher, MatchState &state, idx_t depth);
-	MatcherResult MatchChainLevel(const ListMatcher &matcher, MatchState &state, idx_t depth);
+	[[gnu::always_inline]] MatcherResult MatchChild(const Matcher &matcher, MatchState &state);
+	[[gnu::always_inline]] MatcherResult MatchStartedChild(const Matcher &matcher, MatchState &state);
+	MatcherResult Match(const Matcher &matcher, MatchState &state);
+	MatcherResult MatchComposite(const Matcher &matcher, MatchState &state);
+	MatcherResult MatchList(const ListMatcher &matcher, MatchState &state);
+	MatcherResult MatchChainLevel(const ListMatcher &matcher, MatchState &state);
 	[[gnu::always_inline]] MatcherResult CloseChainLevel(const ListMatcher &matcher, MatchState &state,
-	                                                     MatchState &list_state, MatcherResult core_result, idx_t depth,
-	                                                     bool nested, bool suffixes_empty);
+	                                                     MatchState &list_state, MatcherResult core_result, bool nested,
+	                                                     bool suffixes_empty);
 	MatcherResult ContinueList(const ListMatcher &matcher, MatchState &state, MatchState &list_state,
-	                           idx_t children_begin, idx_t next_child, idx_t depth);
-	MatcherResult MatchChoice(const ChoiceMatcher &matcher, MatchState &state, idx_t depth);
-	MatcherResult MatchOptional(const OptionalMatcher &matcher, MatchState &state, idx_t depth);
-	MatcherResult MatchRepeat(const RepeatMatcher &matcher, MatchState &state, idx_t depth);
-	MatcherResult MatchMemoized(const Matcher &matcher, MatchState &state, idx_t depth);
-	MatcherResult ExecuteFrames(MatchInput input, idx_t depth);
+	                           idx_t children_begin, idx_t next_child);
+	MatcherResult MatchChoice(const ChoiceMatcher &matcher, MatchState &state);
+	MatcherResult MatchOptional(const OptionalMatcher &matcher, MatchState &state);
+	MatcherResult MatchRepeat(const RepeatMatcher &matcher, MatchState &state);
+	MatcherResult MatchMemoized(const Matcher &matcher, MatchState &state);
+	MatcherResult ExecuteFrames(MatchInput input);
 	MatcherResult ExecuteAtomicMatcher(MatchInput input);
 	void DestroyTopFrame();
 	void PushFrame(MatchInput input);
@@ -85,9 +83,6 @@ private:
 
 private:
 	vector<MatchStackFrame> frames;
-	idx_t max_frames = 0;
-	idx_t recursion_limit = 0;
-	idx_t frame_limit = 0;
 };
 
 } // namespace duckdb

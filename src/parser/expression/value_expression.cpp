@@ -1,5 +1,6 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/extension_type_info.hpp"
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/common/types/geometry_crs.hpp"
 #include "duckdb/parser/expression/case_expression.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -279,6 +280,7 @@ static unique_ptr<ParsedExpression> NestedValueExpression(const LogicalType &typ
 }
 
 unique_ptr<ParsedExpression> ConstantExpression::FromValue(const Value &value) {
+	StackDepth::Check();
 	auto &type = value.type();
 	if (type.IsAggregateState()) {
 		auto storage_type = type.WithAlias("").WithExtensionInfo(nullptr);

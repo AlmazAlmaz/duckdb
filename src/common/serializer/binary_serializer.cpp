@@ -1,5 +1,7 @@
 #include "duckdb/common/serializer/binary_serializer.hpp"
 
+#include "duckdb/common/stack_depth.hpp"
+
 #ifdef DEBUG
 #include "duckdb/common/string_util.hpp"
 #endif
@@ -60,6 +62,7 @@ void BinarySerializer::OnOptionalPropertyEnd(bool present) {
 // Nested Type Hooks
 //-------------------------------------------------------------------------
 void BinarySerializer::OnObjectBegin() {
+	StackDepth::Check();
 #ifdef DEBUG
 	debug_stack.emplace_back();
 #endif

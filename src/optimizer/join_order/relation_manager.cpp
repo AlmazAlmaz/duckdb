@@ -2,6 +2,7 @@
 
 #include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/common/enums/logical_operator_type.hpp"
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
 #include "duckdb/optimizer/join_order/join_relation_set.hpp"
@@ -415,6 +416,7 @@ bool RelationManager::AddRelationWithChildren(JoinOrderOptimizer &optimizer, Log
 bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, LogicalOperator &input_op,
                                            vector<reference<LogicalOperator>> &filter_operators,
                                            optional_ptr<LogicalOperator> parent) {
+	StackDepth::Check();
 	in_recursive_cte = !optimizer.recursive_cte_indexes.empty();
 	optional_ptr<LogicalOperator> op = &input_op;
 	vector<reference<LogicalOperator>> datasource_filters;

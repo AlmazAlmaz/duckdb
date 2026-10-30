@@ -1,4 +1,5 @@
 #include "duckdb/planner/subquery/flatten_dependent_join.hpp"
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/planner/subquery/delim_join_cte_rewriter.hpp"
 #include "duckdb/planner/subquery/column_binding_layout.hpp"
@@ -321,6 +322,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::DecorrelateSubtree(
 FlattenDependentJoins::UnnestingState
 FlattenDependentJoins::DecorrelateSubtreeInternal(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
                                                   vector<ColumnBinding> state) {
+	StackDepth::Check();
 	if (plan->type == LogicalOperatorType::LOGICAL_DEPENDENT_JOIN) {
 		auto &op = plan->Cast<LogicalDependentJoin>();
 		DependentJoinOutput output;
@@ -1510,6 +1512,7 @@ bool FlattenDependentJoins::VerifyUnnestingState(LogicalOperator &plan, const Un
 FlattenDependentJoins::UnnestingState
 FlattenDependentJoins::PushDownCorrelatedNodeInternal(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
                                                       vector<ColumnBinding> state) {
+	StackDepth::Check();
 	if (!RequiresDomain(*plan)) {
 		if (plan->type == LogicalOperatorType::LOGICAL_CTE_REF) {
 			return PushDownCTERef(plan);

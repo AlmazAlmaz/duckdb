@@ -865,8 +865,6 @@ LimitPercentResult PEGTransformerFactory::TransformLimitExpression(PEGTransforme
 
 struct GroupingExpressionMap {
 	parsed_expression_map_t<ProjectionIndex> map;
-	ExpressionDepthCheck depth_check;
-	bool verify_depth;
 };
 
 static void CheckGroupingSetMax(idx_t count) {
@@ -894,9 +892,6 @@ static GroupingSet VectorToGroupingSet(vector<ProjectionIndex> &indexes) {
 
 void PEGTransformerFactory::AddGroupByExpression(unique_ptr<ParsedExpression> expression, GroupingExpressionMap &map,
                                                  GroupByNode &result, vector<ProjectionIndex> &result_set) {
-	if (map.verify_depth) {
-		map.depth_check.Verify(*expression);
-	}
 	if (expression->GetExpressionType() == ExpressionType::FUNCTION) {
 		auto &func = expression->Cast<FunctionExpression>();
 		if (func.FunctionName() == "row") {
@@ -989,7 +984,7 @@ string PEGTransformerFactory::TransformRollupKeyword(PEGTransformer &transformer
 GroupByNode PEGTransformerFactory::TransformGroupByList(PEGTransformer &transformer,
                                                         vector<GroupByExpressionInfo> group_by_expression) {
 	GroupByNode result;
-	GroupingExpressionMap map {{}, {transformer.options.max_expression_depth, {}}, transformer.MayExceedDepth()};
+	GroupingExpressionMap map;
 
 	for (auto &group_by_expr : group_by_expression) {
 		vector<GroupingSet> next_sets = GroupByExpressionUnfolding(group_by_expr, map, result);

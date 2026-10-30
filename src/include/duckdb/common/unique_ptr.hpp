@@ -1,6 +1,8 @@
 
 #pragma once
 
+#include "duckdb/common/parse_tree_delete.hpp"
+
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/likely.hpp"
 #include "duckdb/common/memory_safety.hpp"

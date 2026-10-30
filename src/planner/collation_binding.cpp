@@ -1,4 +1,5 @@
 #include "duckdb/planner/collation_binding.hpp"
+#include "duckdb/common/stack_depth.hpp"
 #include "duckdb/catalog/catalog_entry/collate_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -222,6 +223,7 @@ static bool PushNestedCollation(ClientContext &context, unique_ptr<Expression> &
 
 bool CollationBinding::PushCollation(ClientContext &context, unique_ptr<Expression> &source,
                                      const LogicalType &sql_type, CollationType type) const {
+	StackDepth::Check();
 	// Leave collation of aliased structs, lists and arrays to the registered callbacks.
 	if (!sql_type.HasAlias()) {
 		if (StructType::IsStruct(sql_type)) {
