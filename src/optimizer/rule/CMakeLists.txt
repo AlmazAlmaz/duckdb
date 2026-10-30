@@ -32,7 +32,6 @@ add_library_unity(
   invoke_inlining.cpp
   list_transform_unrolling.cpp
   timestamp_comparison.cpp
-  constant_order_normalization.cpp
   concat_flattening.cpp
   contains_to_in_clause.cpp)
 set(ALL_OBJECT_FILES

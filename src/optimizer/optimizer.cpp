@@ -76,7 +76,6 @@ Optimizer::Optimizer(Binder &binder, ClientContext &context)
     : context(context), binder(binder), rewriter(context),
       enable_optimizer(Settings::Get<EnableOptimizerSetting>(context)),
       optimizer_extensions(OptimizerExtension::Iterate(context)) {
-	rewriter.rules.push_back(make_uniq<ConstantOrderNormalizationRule>(rewriter));
 	AddExpressionRules(rewriter);
 }
 
