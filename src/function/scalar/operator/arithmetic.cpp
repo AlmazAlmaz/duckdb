@@ -1302,6 +1302,18 @@ void BinaryScalarFunctionZeroCheck(DataChunk &input, ExpressionState &state, Vec
 	                                                             reference<ExpressionState>(state));
 }
 
+template <class T, class OP, bool NULL_ON_ZERO>
+void BinaryFloatingPointZeroCheck(DataChunk &input, ExpressionState &state, Vector &result) {
+	bool zero = false;
+	BinaryExecutor::Execute<T, T, T>(input.data[0], input.data[1], result, input.size(), [&](T left, T right) {
+		zero |= right == 0;
+		return OP::template Operation<T, T, T>(left, right);
+	});
+	if (zero) {
+		BinaryScalarFunctionZeroCheck<T, T, T, OP, BinaryZeroCheckWrapper<NULL_ON_ZERO>>(input, state, result);
+	}
+}
+
 template <class OP, bool NULL_ON_ZERO>
 scalar_function_t GetBinaryFunctionZeroCheck(PhysicalType type) {
 	switch (type) {
@@ -1328,9 +1340,9 @@ scalar_function_t GetBinaryFunctionZeroCheck(PhysicalType type) {
 		return BinaryScalarFunctionZeroCheck<uhugeint_t, uhugeint_t, uhugeint_t, OP,
 		                                     BinaryZeroCheckWrapper<NULL_ON_ZERO>>;
 	case PhysicalType::FLOAT:
-		return BinaryScalarFunctionZeroCheck<float, float, float, OP, BinaryZeroCheckWrapper<NULL_ON_ZERO>>;
+		return BinaryFloatingPointZeroCheck<float, OP, NULL_ON_ZERO>;
 	case PhysicalType::DOUBLE:
-		return BinaryScalarFunctionZeroCheck<double, double, double, OP, BinaryZeroCheckWrapper<NULL_ON_ZERO>>;
+		return BinaryFloatingPointZeroCheck<double, OP, NULL_ON_ZERO>;
 	default:
 		throw NotImplementedException("Unimplemented type for GetBinaryFunctionZeroCheck");
 	}
