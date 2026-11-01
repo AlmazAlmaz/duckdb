@@ -382,6 +382,9 @@ ErrorData DuckTransaction::AppendLocalStorage(ClientContext &context, AttachedDa
 		auto &profiler = *context.client_data->profiler;
 		auto commit_timer = profiler.StartTimer<MetricStorageCommitLocalStorageLatency>();
 		storage->Commit(commit_state.get());
+		for (auto &writer : log_writers) {
+			writer->Append();
+		}
 		commit_timer.EndTimer();
 	} catch (std::exception &ex) {
 		// Call RevertCommit() outside this try-catch as it itself may throw
