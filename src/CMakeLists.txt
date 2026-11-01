@@ -4,26 +4,6 @@ if(${DISABLE_THREADS})
   add_definitions(-DDUCKDB_NO_THREADS)
 endif()
 
-if(NOT MSVC)
-  set(CMAKE_CXX_FLAGS_DEBUG
-      "${CMAKE_CXX_FLAGS_DEBUG} -Wextra -Wno-unused-parameter -Wno-redundant-move"
-  )
-  if(CMAKE_COMPILER_IS_GNUCC)
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 6)
-      set(CMAKE_CXX_FLAGS_DEBUG
-          "${CMAKE_CXX_FLAGS_DEBUG} -Wimplicit-fallthrough")
-    endif()
-  else()
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wimplicit-fallthrough")
-  endif()
-endif()
-if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}"
-                                                  STREQUAL "AppleClang")
-  set(CMAKE_CXX_FLAGS_DEBUG
-      "${CMAKE_CXX_FLAGS_DEBUG} -Wimplicit-int-conversion -Wshorten-64-to-32 -Wnarrowing -Wsign-conversion -Wsign-compare -Wconversion -Wtype-limits"
-  )
-endif()
-
 if(MSVC)
   add_compile_options("/bigobj")
 endif()
