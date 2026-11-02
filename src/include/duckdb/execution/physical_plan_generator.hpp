@@ -136,7 +136,6 @@ public:
 	ArenaAllocator &ArenaRef();
 
 public:
-	PhysicalOperator &ResolveDefaultsProjection(LogicalInsert &op, PhysicalOperator &child);
 	//! Plans the copy without expanding op.file_path
 	PhysicalOperator &CreatePlan(LogicalCopyToFile &op, PhysicalOperator &plan);
 

@@ -906,9 +906,7 @@
       {
         "id": 100,
         "name": "filters",
-        "type": "map<ProjectionIndex, TableFilter*>",
-        "serialize_property": "GetTableFiltersForSerialization(serializer)",
-        "deserialize_property": "GetTableFiltersForDeserialization(deserializer)"
+        "type": "map<ProjectionIndex, TableFilter*>"
       },
       {
         "id": 101,

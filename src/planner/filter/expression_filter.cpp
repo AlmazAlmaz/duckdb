@@ -22,11 +22,6 @@
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/expression_barrier.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
-#include "duckdb/planner/filter/bloom_filter.hpp"
-#include "duckdb/planner/filter/dynamic_filter.hpp"
-#include "duckdb/planner/filter/optional_filter.hpp"
-#include "duckdb/planner/filter/prefix_range_filter.hpp"
-#include "duckdb/planner/filter/selectivity_optional_filter.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/execution/expression_executor.hpp"
@@ -1039,20 +1034,6 @@ shared_ptr<DynamicFilterData> ExpressionFilter::GetOptionalDynamicFilterData(con
 
 shared_ptr<DynamicFilterData> ExpressionFilter::GetOptionalDynamicFilterData(const Expression &expr) {
 	return TryGetOptionalDynamicFilterData(expr);
-}
-
-unique_ptr<ExpressionFilter> ExpressionFilter::FromTableFilter(const TableFilter &filter, const LogicalType &col_type) {
-	if (filter.filter_type == TableFilterType::EXPRESSION_FILTER) {
-		auto &expr_filter = filter.Cast<ExpressionFilter>();
-		return expr_filter.Copy();
-	}
-	if (col_type == LogicalType::ANY) {
-		throw InternalException("ExpressionFilter::FromTableFilter requires the actual column type");
-	}
-	storage_t col_idx = 0;
-	auto col_ref = make_uniq<BoundReferenceExpression>(col_type, col_idx);
-	auto expr = filter.ToExpression(*col_ref);
-	return make_uniq<ExpressionFilter>(std::move(expr));
 }
 
 string ExpressionFilter::InternalFunctionToString(const string &func_name, optional_ptr<FunctionData> bind_data,

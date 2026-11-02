@@ -6,7 +6,6 @@
 #include "duckdb/parser/expression/between_expression.hpp"
 #include "duckdb/planner/expression/bound_between_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
-#include "duckdb/planner/expression/legacy_bound_between_expression.hpp"
 
 namespace duckdb {
 
@@ -275,13 +274,6 @@ ExpressionType BetweenGetExpressionType(FunctionToStringInput &input) {
 	return ExpressionType::COMPARE_BETWEEN;
 }
 
-unique_ptr<Expression> BetweenLegacySerializeCallback(FunctionToStringInput &input) {
-	auto &between_info = input.bind_data->Cast<BetweenFunctionData>();
-	return make_uniq<LegacyBoundBetweenExpression>(input.GetChild(0).Copy(), input.GetChild(1).Copy(),
-	                                               input.GetChild(2).Copy(), between_info.lower_inclusive,
-	                                               between_info.upper_inclusive);
-}
-
 void BetweenFunctionSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
                               const BoundScalarFunction &function) {
 	auto &bind_data = bind_data_p->Cast<BetweenFunctionData>();
@@ -304,7 +296,6 @@ ScalarFunction BetweenFun::GetFunction() {
 	between_fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	between_fun.SetToStringCallback(BetweenToString);
 	between_fun.SetGetExpressionTypeCallback(BetweenGetExpressionType);
-	between_fun.SetLegacySerializeCallback(BetweenLegacySerializeCallback);
 	between_fun.SetSerializeCallback(BetweenFunctionSerialize);
 	between_fun.SetDeserializeCallback(BetweenFunctionDeserialize);
 #if !DUCKDB_SMALLER_BINARY(between_select)

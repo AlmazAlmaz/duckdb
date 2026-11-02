@@ -29,8 +29,6 @@ public:
 	vector<PhysicalIndex> columns;
 	//! Set of expressions for INSERT or UPDATE
 	vector<unique_ptr<Expression>> expressions;
-	//! Deprecated: Column index map (for INSERT)
-	physical_index_vector_t<idx_t> column_index_map;
 	//! Whether or not an UPDATE is a DELETE + INSERT
 	bool update_is_del_and_insert = false;
 	idx_t update_column_count = 0;

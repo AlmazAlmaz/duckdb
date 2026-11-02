@@ -92,23 +92,6 @@ unique_ptr<MergeIntoOperator> PlanMergeIntoAction(ClientContext &context, Logica
 		break;
 	}
 	case MergeActionType::MERGE_INSERT: {
-		// transform expressions if required
-		if (!action.column_index_map.empty()) {
-			//! Deprecated: plan expressions for default expressions, now set at bind time
-			vector<unique_ptr<Expression>> new_expressions;
-			for (auto &col : op.table.GetColumns().Physical()) {
-				auto storage_idx = col.StorageOid();
-				auto mapped_index = action.column_index_map[col.Physical()];
-				if (mapped_index == DConstants::INVALID_INDEX) {
-					// push default value
-					new_expressions.push_back(op.bound_defaults[storage_idx]->Copy());
-				} else {
-					// push reference
-					new_expressions.push_back(std::move(action.expressions[mapped_index]));
-				}
-			}
-			action.expressions = std::move(new_expressions);
-		}
 		result->expressions = std::move(action.expressions);
 		auto &action_input = PlanMergeActionSource(planner, plan, condition, *result);
 
@@ -255,20 +238,6 @@ static unique_ptr<MergeIntoOperator> PlanGenericMergeIntoAction(ClientContext &c
 	case MergeActionType::MERGE_INSERT: {
 		// the expressions of the action generate the values to insert - the projection on top of the action source
 		// emits exactly the rows that a regular INSERT reads
-		if (!action.column_index_map.empty()) {
-			//! Deprecated: plan expressions for default expressions, now set at bind time
-			vector<unique_ptr<Expression>> new_expressions;
-			for (auto &col : op.table.GetColumns().Physical()) {
-				auto storage_idx = col.StorageOid();
-				auto mapped_index = action.column_index_map[col.Physical()];
-				if (mapped_index == DConstants::INVALID_INDEX) {
-					new_expressions.push_back(op.bound_defaults[storage_idx]->Copy());
-				} else {
-					new_expressions.push_back(std::move(action.expressions[mapped_index]));
-				}
-			}
-			action.expressions = std::move(new_expressions);
-		}
 		CastActionExpressionsToColumnTypes(context, op.table, action.expressions, vector<PhysicalIndex>());
 		result->expressions = std::move(action.expressions);
 		auto &action_input = PlanMergeActionSource(planner, plan, condition, *result);

@@ -180,9 +180,6 @@ typedef unique_ptr<ParsedExpression> (*scalar_function_unbind_t)(FunctionUnbindI
 //! Get the expression type of a function
 typedef ExpressionType (*function_get_expression_type_t)(FunctionToStringInput &input);
 
-//! Legacy serialize function for expressions that were converted into functions
-typedef unique_ptr<Expression> (*function_legacy_serialize_t)(FunctionToStringInput &input);
-
 struct BucketGrid {
 	enum class Family : uint8_t { NONE, NAIVE, ZONED };
 
@@ -259,8 +256,6 @@ public:
 
 	function_serialize_t serialize = nullptr;
 	function_deserialize_t deserialize = nullptr;
-
-	function_legacy_serialize_t legacy_serialize = nullptr;
 
 	//! The filter prune function (if any)
 	propagate_filter_t filter_prune = nullptr;
@@ -374,10 +369,6 @@ public: // Callbacks
 	auto HasUnbindCallback() const -> bool { return callbacks.unbind != nullptr; }
 	auto SetUnbindCallback(scalar_function_unbind_t callback) -> void { callbacks.unbind = callback; }
 	auto GetUnbindCallback() const -> scalar_function_unbind_t { return callbacks.unbind; }
-
-	auto HasLegacySerializeCallback() const -> bool { return callbacks.legacy_serialize != nullptr; }
-	auto SetLegacySerializeCallback(function_legacy_serialize_t callback) -> void { callbacks.legacy_serialize = callback; }
-	auto GetLegacySerializeCallback() const -> function_legacy_serialize_t { return callbacks.legacy_serialize; }
 
 	auto SetGetExpressionTypeCallback(function_get_expression_type_t callback) -> void { callbacks.get_expression_type = callback; }
 	auto GetExpressionType(FunctionToStringInput &input) const -> ExpressionType {

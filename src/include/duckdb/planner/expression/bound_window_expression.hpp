@@ -187,12 +187,6 @@ protected:
 	bool IsNodeVolatile() const override;
 
 private:
-	//! Remove LEAD/LAG offset/default
-	vector<unique_ptr<Expression>> SerializedChildren(Serializer &serializer) const;
-	unique_ptr<Expression> SerializedOffset(Serializer &serializer) const;
-	unique_ptr<Expression> SerializedDefault(Serializer &serializer) const;
-
-private:
 	//! The bound aggregate function
 	unique_ptr<BoundAggregateFunction> aggregate;
 	//! The bound window function

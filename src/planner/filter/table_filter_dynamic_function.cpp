@@ -25,6 +25,20 @@ unique_ptr<Expression> DynamicFilterData::ToExpression(const Expression &column)
 	                                         make_uniq<BoundConstantExpression>(constant));
 }
 
+void DynamicFilterData::SetValue(Value val) {
+	if (val.IsNull()) {
+		return;
+	}
+	lock_guard<mutex> l(lock);
+	constant = std::move(val);
+	version.store(version.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+}
+
+void DynamicFilterData::Reset() {
+	lock_guard<mutex> l(lock);
+	version.store(0, std::memory_order_release);
+}
+
 bool DynamicFilterData::CompareValue(ExpressionType comparison_type, const Value &constant, const Value &value) {
 	switch (comparison_type) {
 	case ExpressionType::COMPARE_EQUAL:

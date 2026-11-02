@@ -269,13 +269,8 @@ void LogicalOperator::Verify(ClientContext &context) {
 		MemoryStream stream(Allocator::Get(context));
 		// We are serializing a query plan
 		try {
-			auto &config = DBConfig::GetConfig(context);
 			SerializationOptions options;
-			if (config.options.storage_compatibility.manually_set) {
-				options.storage_compatibility = config.options.storage_compatibility;
-			} else {
-				options.storage_compatibility = StorageCompatibility::SereneDBLatest();
-			}
+			options.storage_compatibility = StorageCompatibility::SereneDBLatest();
 
 			BinarySerializer::Serialize(*expressions[expr_idx], stream, options);
 		} catch (NotImplementedException &ex) {

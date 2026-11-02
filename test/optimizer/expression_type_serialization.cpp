@@ -50,11 +50,7 @@ static unique_ptr<Expression> CopyExpression(ClientContext &context, const Expre
 static void CheckExpressionTypes(ClientContext &context, const Expression &expression) {
 	INFO("expression " << expression.ToString());
 	RequireExpressionType(expression, *expression.Copy());
-	for (const auto &compatibility :
-	     {StorageCompatibility::FromIndex(StorageVersion::V1_5_0), StorageCompatibility::SereneDBLatest()}) {
-		auto copy = CopyExpression(context, expression, compatibility);
-		RequireExpressionType(expression, *copy);
-	}
+	RequireExpressionType(expression, *CopyExpression(context, expression, StorageCompatibility::SereneDBLatest()));
 	ExpressionIterator::EnumerateChildren(expression,
 	                                      [&](const Expression &child) { CheckExpressionTypes(context, child); });
 }

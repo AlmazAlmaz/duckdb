@@ -179,9 +179,6 @@ BoundExpressionSQLExportResult BoundExpressionSQLExportState::ExportInternal(con
 	case ExpressionClass::BOUND_UNNEST:
 	case ExpressionClass::BOUND_LAMBDA:
 	case ExpressionClass::BOUND_LAMBDA_REF:
-	case ExpressionClass::LEGACY_BOUND_CAST:
-	case ExpressionClass::LEGACY_BOUND_COMPARISON:
-	case ExpressionClass::LEGACY_BOUND_BETWEEN:
 		return BoundExpressionSQLExportResult::Failure({UnsupportedExpression(path, expression.GetExpressionClass())});
 	case ExpressionClass::BOUND_EXPANDED:
 	case ExpressionClass::AGGREGATE:

@@ -349,18 +349,12 @@ void Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op
 		return;
 	}
 
-	auto &config = DBConfig::GetConfig(context);
 	// format (de)serialization of this operator
 	try {
 		MemoryStream stream(Allocator::Get(context));
 
 		SerializationOptions options;
-		if (config.options.storage_compatibility.manually_set) {
-			// Override the default of 'latest' if this was manually set (for testing, mostly)
-			options.storage_compatibility = config.options.storage_compatibility;
-		} else {
-			options.storage_compatibility = StorageCompatibility::SereneDBLatest();
-		}
+		options.storage_compatibility = StorageCompatibility::SereneDBLatest();
 
 		BinarySerializer::Serialize(*op, stream, options);
 		stream.Rewind();
