@@ -273,6 +273,7 @@ public:
 	//! help-section layout, and (for PSQL) the auto-ATTACH wiring after
 	//! option parsing.
 	ShellSubcommand subcommand = ShellSubcommand::SHELL;
+	ShellEngine engine {};
 	//! PSQL connection parameters. The `-h`/`-p`/`-d`/`-U` flags (plus
 	//! their long forms and the DBNAME/USERNAME positionals) populate
 	//! these; we synthesise an ATTACH against them after option parsing.

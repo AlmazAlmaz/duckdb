@@ -2,6 +2,9 @@
 
 #include <cstdint>
 
+#include "duckdb/main/config.hpp"
+#include "duckdb/main/database.hpp"
+
 namespace duckdb_shell {
 
 // Selects which subcommand the shell is rendering for. SHELL is a
@@ -14,11 +17,16 @@ enum class ShellSubcommand : uint8_t {
 	PSQL,  // `serened psql`
 };
 
+struct ShellEngine {
+	void (*configure)(duckdb::DBConfig &config);
+	void (*load)(duckdb::DatabaseInstance &db);
+};
+
 // Public entry point. Parses argv, opens the database, runs init / -cmd /
 // -c / -f options, then drives the REPL or exits. `subcommand` selects
 // the help layout and (for PSQL) turns on the auto-ATTACH wiring after
 // option parsing. argv is read but never modified, so callers may pass
 // the unmodified main() argv directly.
-int Run(int argc, char **argv, ShellSubcommand subcommand);
+int Run(int argc, char **argv, ShellSubcommand subcommand, ShellEngine engine);
 
 } // namespace duckdb_shell

@@ -1307,12 +1307,14 @@ void ShellState::OpenDB(ShellOpenFlags flags) {
 		try {
 			db = make_uniq<duckdb::DuckDB>(zDbFilename.c_str(), &config);
 			RegisterShellLogger(*db, storage_ptr);
+			engine.load(*db->instance);
 			conn = make_uniq<duckdb::Connection>(*db);
 		} catch (std::exception &ex) {
 			PrintDatabaseError(duckdb::ErrorData(ex));
 			if (flags == ShellOpenFlags::KEEP_ALIVE_ON_FAILURE) {
 				db = make_uniq<duckdb::DuckDB>(":memory:", &config);
 				RegisterShellLogger(*db, storage_ptr);
+				engine.load(*db->instance);
 				conn = make_uniq<duckdb::Connection>(*db);
 			} else {
 				ShellState::Exit(1);
@@ -1329,7 +1331,6 @@ void ShellState::OpenDB(ShellOpenFlags flags) {
 		db->LoadStaticExtension<duckdb::AutocompleteExtension>();
 #endif
 		db->LoadStaticExtension<duckdb::ShellExtension>();
-		LoadDocsBackend(*conn->context);
 		if (safe_mode) {
 			ExecuteQuery("SET enable_external_access=false");
 			ExecuteQuery("SET lock_configuration=true");
@@ -3837,7 +3838,7 @@ static bool IsStdStreamAConsole(int std_fd) {
 
 namespace duckdb_shell {
 
-int RunShell(int argc, char **argv, ShellSubcommand subcommand) {
+int RunShell(int argc, char **argv, ShellSubcommand subcommand, ShellEngine engine) {
 	int rc = 0;
 	vector<string> extra_commands;
 
@@ -3861,6 +3862,8 @@ int RunShell(int argc, char **argv, ShellSubcommand subcommand) {
 		data.highlight_errors = OptionType::OFF;
 	}
 	data.subcommand = subcommand;
+	data.engine = engine;
+	engine.configure(data.config);
 	if (subcommand == duckdb_shell::ShellSubcommand::PSQL) {
 		// Seed psql connection params from PG* env vars. Explicit flags
 		// (-h/-p/-d/-U or positionals) parsed later overwrite these.
@@ -4232,11 +4235,11 @@ int RunShell(int argc, char **argv, ShellSubcommand subcommand) {
 	return rc;
 }
 
-int Run(int argc, char **argv, ShellSubcommand subcommand) {
+int Run(int argc, char **argv, ShellSubcommand subcommand, ShellEngine engine) {
 	auto &shell_state = ShellState::GetReference();
 	int rc = 0;
 	try {
-		rc = RunShell(argc, argv, subcommand);
+		rc = RunShell(argc, argv, subcommand, engine);
 	} catch (std::exception &ex) {
 		rc = 1;
 		ErrorData error(ex);
