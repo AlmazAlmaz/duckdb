@@ -91,10 +91,8 @@ endif()
 
 if(DUCKDB_EXTENSION_TPCH_SHOULD_LINK)
   include_directories(../../extension/tpch/include)
-  set(TEST_API_OBJECTS
-      ${TEST_API_OBJECTS} test_tpch_with_relations.cpp
-      test_tpch_with_streaming.cpp
-      serialized_plans/test_plan_serialization_bwc.cpp)
+  set(TEST_API_OBJECTS ${TEST_API_OBJECTS} test_tpch_with_relations.cpp
+                       test_tpch_with_streaming.cpp)
 endif()
 
 if(DUCKDB_EXTENSION_TPCDS_SHOULD_LINK)
