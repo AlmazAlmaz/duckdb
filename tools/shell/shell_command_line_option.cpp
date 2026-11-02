@@ -173,13 +173,13 @@ MetadataResult PsqlNoReadline(ShellState &state, const vector<string> &args) {
 // psql -z / --field-separator-zero: column separator = single NUL byte.
 MetadataResult PsqlFieldSepZero(ShellState &state, const vector<string> &args) {
 	state.colSeparator = string(1, '\0');
-	return MetadataResult::SUCCESS;
+	return MarkOutputModeFlag(state, args);
 }
 
 // psql -0 / --record-separator-zero: row separator = single NUL byte.
 MetadataResult PsqlRecordSepZero(ShellState &state, const vector<string> &args) {
 	state.rowSeparator = string(1, '\0');
-	return MetadataResult::SUCCESS;
+	return MarkOutputModeFlag(state, args);
 }
 
 // psql -1 / --single-transaction: when a -c/-f is queued, the shell
@@ -211,6 +211,7 @@ MetadataResult PsqlAcceptIgnore(ShellState &state, const vector<string> &args) {
 //   pager = on | off | always
 // Synonyms accepted: `x` for `expanded`, `t` for `tuples_only`.
 MetadataResult PsqlPset(ShellState &state, const vector<string> &args) {
+	MarkOutputModeFlag(state, args);
 	const string &raw = args[1];
 	string key;
 	string value;
@@ -624,19 +625,21 @@ static const CommandLineOption psql_options[] = {
     {"e", 0, "", nullptr, EnableEcho, "(psql) echo commands sent to server"},
     {"echo-queries", 0, "", nullptr, EnableEcho, "(psql) echo commands sent to server"},
     // Output format.
-    {"A", 0, "", nullptr, ToggleOutputMode<RenderMode::LIST>, "(psql) unaligned table output mode"},
-    {"no-align", 0, "", nullptr, ToggleOutputMode<RenderMode::LIST>, "(psql) unaligned table output mode"},
-    {"csv", 0, "", nullptr, ToggleCSVMode, "(psql) CSV output mode"},
-    {"H", 0, "", nullptr, ToggleOutputMode<RenderMode::HTML>, "(psql) HTML output mode"},
-    {"html", 0, "", nullptr, ToggleOutputMode<RenderMode::HTML>, "(psql) HTML output mode"},
-    {"t", 0, "", nullptr, PsqlTuplesOnly, "(psql) print rows only (no column headers)"},
-    {"tuples-only", 0, "", nullptr, PsqlTuplesOnly, "(psql) print rows only (no column headers)"},
-    {"x", 0, "", nullptr, ToggleOutputMode<RenderMode::LINE>, "(psql) one value per line (expanded)"},
-    {"expanded", 0, "", nullptr, ToggleOutputMode<RenderMode::LINE>, "(psql) one value per line (expanded)"},
-    {"F", 1, "STRING", nullptr, ShellState::SetSeparator, "(psql) field separator for unaligned output"},
-    {"field-separator", 1, "STRING", nullptr, ShellState::SetSeparator, "(psql) field separator for unaligned output"},
-    {"R", 1, "STRING", nullptr, SetNewlineSeparator, "(psql) record separator for unaligned output"},
-    {"record-separator", 1, "STRING", nullptr, SetNewlineSeparator, "(psql) record separator for unaligned output"},
+    {"A", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::LIST>, "(psql) unaligned table output mode"},
+    {"no-align", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::LIST>, "(psql) unaligned table output mode"},
+    {"csv", 0, "", MarkOutputModeFlag, ToggleCSVMode, "(psql) CSV output mode"},
+    {"H", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::HTML>, "(psql) HTML output mode"},
+    {"html", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::HTML>, "(psql) HTML output mode"},
+    {"t", 0, "", MarkOutputModeFlag, PsqlTuplesOnly, "(psql) print rows only (no column headers)"},
+    {"tuples-only", 0, "", MarkOutputModeFlag, PsqlTuplesOnly, "(psql) print rows only (no column headers)"},
+    {"x", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::LINE>, "(psql) one value per line (expanded)"},
+    {"expanded", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::LINE>, "(psql) one value per line (expanded)"},
+    {"F", 1, "STRING", MarkOutputModeFlag, ShellState::SetSeparator, "(psql) field separator for unaligned output"},
+    {"field-separator", 1, "STRING", MarkOutputModeFlag, ShellState::SetSeparator,
+     "(psql) field separator for unaligned output"},
+    {"R", 1, "STRING", MarkOutputModeFlag, SetNewlineSeparator, "(psql) record separator for unaligned output"},
+    {"record-separator", 1, "STRING", MarkOutputModeFlag, SetNewlineSeparator,
+     "(psql) record separator for unaligned output"},
     {"o", 1, "FILENAME", nullptr, PsqlOutputFile, "(psql) send query results to FILE"},
     {"output", 1, "FILENAME", nullptr, PsqlOutputFile, "(psql) send query results to FILE"},
     {"X", 0, "", SkipInit, nullptr, "(psql) do not read startup file (~/.duckdbrc)"},
