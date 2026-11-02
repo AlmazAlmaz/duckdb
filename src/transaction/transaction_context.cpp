@@ -114,6 +114,9 @@ void TransactionContext::Commit() {
 			// throw fatal / internal exceptions directly
 			error.Throw();
 		}
+		if (error.Type() == ExceptionType::INVALID) {
+			error.Throw();
+		}
 		throw TransactionException("Failed to commit: %s", error.RawMessage());
 	}
 	for (auto &state : context.registered_state->States()) {
