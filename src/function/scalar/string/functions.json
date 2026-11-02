@@ -441,7 +441,7 @@
         "parameters": "string,pattern",
         "description": "",
         "example": "",
-        "type": "scalar_function",
+        "type": "scalar_function_set",
         "struct": "LikeFun"
     },
     {
@@ -449,7 +449,7 @@
         "parameters": "string,pattern",
         "description": "",
         "example": "",
-        "type": "scalar_function",
+        "type": "scalar_function_set",
         "struct": "NotLikeFun"
     },
     {
@@ -482,7 +482,7 @@
         "description": "Returns `true` if the `string` matches the `like_specifier` (see Pattern Matching) using case-sensitive matching. `escape_character` is used to search for wildcard characters in the `string`.",
         "example": "like_escape('a%c', 'a$%c', '$')",
         "categories": ["string"],
-        "type": "scalar_function"
+        "type": "scalar_function_set"
     },
     {
         "name": "similar_to_escape",
@@ -498,7 +498,7 @@
         "description": "Returns `false` if the `string` matches the `like_specifier` (see Pattern Matching) using case-sensitive matching. `escape_character` is used to search for wildcard characters in the `string`.",
         "example": "not_like_escape('a%c', 'a$%c', '$')",
         "categories": ["string"],
-        "type": "scalar_function"
+        "type": "scalar_function_set"
     },
     {
         "name": "ilike_escape",

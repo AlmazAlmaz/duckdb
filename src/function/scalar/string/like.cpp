@@ -188,6 +188,19 @@ struct ASCIILCaseReader {
 	}
 };
 
+struct ByteReader {
+	static void NextCharacter(const char *sdata, idx_t slen, idx_t &sidx) {
+		sidx++;
+	}
+
+	static char Operation(const char *data, idx_t pos) {
+		return data[pos];
+	}
+};
+
+template <bool BYTES>
+using LikeReader = std::conditional_t<BYTES, ByteReader, StandardCharacterReader>;
+
 template <char PERCENTAGE, char UNDERSCORE, bool HAS_ESCAPE, class READER = StandardCharacterReader>
 bool TemplatedLikeOperator(const char *sdata, idx_t slen, const char *pdata, idx_t plen, char escape) {
 	idx_t pidx = 0;
@@ -442,20 +455,24 @@ unique_ptr<FunctionData> LikeBindFunction(BindScalarFunctionInput &input) {
 	return nullptr;
 }
 
-bool LikeOperatorFunction(const char *s, idx_t slen, const char *pattern, idx_t plen, char escape) {
-	return TemplatedLikeOperator<'%', '_', true>(s, slen, pattern, plen, escape);
+unique_ptr<FunctionData> BlobLikeBindFunction(BindScalarFunctionInput &input) {
+	auto pattern = input.TryGetConstant(1);
+	if (pattern) {
+		return LikeMatcher::CreateLiteralMatcher(StringValue::Get(*pattern), true, '\\');
+	}
+	return nullptr;
 }
 
-bool LikeOperatorFunction(const char *s, idx_t slen, const char *pattern, idx_t plen) {
-	return TemplatedLikeOperator<'%', '_', false>(s, slen, pattern, plen, '\0');
-}
-
+template <bool BYTES>
 bool LikeOperatorFunction(string_t &s, string_t &pat) {
-	return LikeOperatorFunction(s.GetData(), s.GetSize(), pat.GetData(), pat.GetSize());
+	return TemplatedLikeOperator<'%', '_', false, LikeReader<BYTES>>(s.GetData(), s.GetSize(), pat.GetData(),
+	                                                                 pat.GetSize(), '\0');
 }
 
+template <bool BYTES>
 bool LikeOperatorFunction(string_t &s, string_t &pat, char escape) {
-	return LikeOperatorFunction(s.GetData(), s.GetSize(), pat.GetData(), pat.GetSize(), escape);
+	return TemplatedLikeOperator<'%', '_', true, LikeReader<BYTES>>(s.GetData(), s.GetSize(), pat.GetData(),
+	                                                                pat.GetSize(), escape);
 }
 
 static void CheckEscapeString(const string_t &escape) {
@@ -500,9 +517,11 @@ idx_t WithBackslashEscape(const char *data, idx_t size, char escape, char *resul
 	return length;
 }
 
+template <bool BYTES>
 bool LikeEscapeOperator(string_t str, string_t pattern, string_t escape) {
 	char escape_char = GetEscapeChar(escape);
-	return escape.GetSize() == 0 ? LikeOperatorFunction(str, pattern) : LikeOperatorFunction(str, pattern, escape_char);
+	return escape.GetSize() == 0 ? LikeOperatorFunction<BYTES>(str, pattern)
+	                             : LikeOperatorFunction<BYTES>(str, pattern, escape_char);
 }
 
 bool UniformPattern(const Vector &patterns, string_t &pattern) {
@@ -527,12 +546,14 @@ bool UniformPattern(const Vector &patterns, string_t &pattern) {
 }
 
 struct LikeLocalState : public FunctionLocalState {
+	template <bool BYTES>
 	optional_ptr<LikeMatcher> Matcher(string_t pattern, bool has_escape, char escape) {
 		if (!prepared || pattern != last_pattern || has_escape != last_has_escape || escape != last_escape) {
 			last_pattern.assign(pattern.GetData(), pattern.GetSize());
 			last_has_escape = has_escape;
 			last_escape = escape;
-			matcher = LikeMatcher::CreateLikeMatcher(last_pattern, has_escape, escape);
+			matcher = BYTES ? LikeMatcher::CreateLiteralMatcher(last_pattern, has_escape, escape)
+			                : LikeMatcher::CreateLikeMatcher(last_pattern, has_escape, escape);
 			prepared = true;
 		}
 		return matcher.get();
@@ -565,12 +586,12 @@ void MatchAll(LikeMatcher &matcher, const Vector &strings, Vector &result) {
 	});
 }
 
-template <bool INVERT>
+template <bool INVERT, bool BYTES>
 void LikeMatchPatterns(LikeLocalState &lstate, const Vector &strings, const Vector &patterns, bool has_escape,
                        char escape, Vector &result) {
 	string_t pattern;
 	if (UniformPattern(patterns, pattern)) {
-		auto matcher = lstate.Matcher(pattern, has_escape, escape);
+		auto matcher = lstate.Matcher<BYTES>(pattern, has_escape, escape);
 		if (matcher) {
 			MatchAll<INVERT>(*matcher, strings, result);
 			return;
@@ -578,15 +599,15 @@ void LikeMatchPatterns(LikeLocalState &lstate, const Vector &strings, const Vect
 	}
 	// use generic like matcher
 	if (has_escape) {
-		BinaryExecutor::Execute<string_t, string_t, bool>(strings, patterns, result,
-		                                                  [&](string_t str, string_t pattern) {
-			                                                  bool match = LikeOperatorFunction(str, pattern, escape);
-			                                                  return INVERT ? !match : match;
-		                                                  });
+		BinaryExecutor::Execute<string_t, string_t, bool>(
+		    strings, patterns, result, [&](string_t str, string_t pattern) {
+			    bool match = LikeOperatorFunction<BYTES>(str, pattern, escape);
+			    return INVERT ? !match : match;
+		    });
 		return;
 	}
 	BinaryExecutor::Execute<string_t, string_t, bool>(strings, patterns, result, [&](string_t str, string_t pattern) {
-		bool match = LikeOperatorFunction(str, pattern);
+		bool match = LikeOperatorFunction<BYTES>(str, pattern);
 		return INVERT ? !match : match;
 	});
 }
@@ -754,7 +775,7 @@ struct GlobOperator {
 	}
 };
 
-template <bool INVERT>
+template <bool INVERT, bool BYTES>
 void LikeEscapeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	const auto &str = args.data[0];
 	const auto &pattern = args.data[1];
@@ -764,14 +785,14 @@ void LikeEscapeFunction(DataChunk &args, ExpressionState &state, Vector &result)
 		auto escape_str = *ConstantVector::GetData<string_t>(escape);
 		if (escape_str.GetSize() <= 1) {
 			auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<LikeLocalState>();
-			LikeMatchPatterns<INVERT>(lstate, str, pattern, escape_str.GetSize() == 1, GetEscapeChar(escape_str),
-			                          result);
+			LikeMatchPatterns<INVERT, BYTES>(lstate, str, pattern, escape_str.GetSize() == 1, GetEscapeChar(escape_str),
+			                                 result);
 			return;
 		}
 	}
 	TernaryExecutor::Execute<string_t, string_t, string_t, bool>(
 	    str, pattern, escape, result, [&](string_t str, string_t pattern, string_t escape) {
-		    bool match = LikeEscapeOperator(str, pattern, escape);
+		    bool match = LikeEscapeOperator<BYTES>(str, pattern, escape);
 		    return INVERT ? !match : match;
 	    });
 }
@@ -849,7 +870,7 @@ unique_ptr<BaseStatistics> ILikePropagateStats(ClientContext &context, FunctionS
 	return nullptr;
 }
 
-template <bool INVERT>
+template <bool INVERT, bool BYTES>
 void RegularLikeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	if (func_expr.BindInfo()) {
@@ -858,7 +879,7 @@ void RegularLikeFunction(DataChunk &input, ExpressionState &state, Vector &resul
 		MatchAll<INVERT>(matcher, input.data[0], result);
 	} else {
 		auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<LikeLocalState>();
-		LikeMatchPatterns<INVERT>(lstate, input.data[0], input.data[1], true, '\\', result);
+		LikeMatchPatterns<INVERT, BYTES>(lstate, input.data[0], input.data[1], true, '\\', result);
 	}
 }
 
@@ -920,15 +941,41 @@ FilterPropagateResult PatternFilterPrune(const FunctionStatisticsPruneInput &inp
 	return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 }
 
+template <bool INVERT, bool BYTES>
+ScalarFunction LikeOverload(const char *name) {
+	const auto type = BYTES ? LogicalType::BLOB : LogicalType::VARCHAR;
+	ScalarFunction like(name, {type, type}, LogicalType::BOOLEAN, RegularLikeFunction<INVERT, BYTES>,
+	                    BYTES ? BlobLikeBindFunction : LikeBindFunction, nullptr, LikeInitLocalState);
+	if (!BYTES) {
+		like.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	}
+	like.GetSignature().GetParameter(0).SetName("string");
+	like.GetSignature().GetParameter(1).SetName("pattern");
+	return like;
+}
+
+template <bool INVERT, bool BYTES>
+ScalarFunction LikeEscapeOverload(const char *name) {
+	const auto type = BYTES ? LogicalType::BLOB : LogicalType::VARCHAR;
+	ScalarFunction like_escape(name, {}, LogicalType::BOOLEAN, LikeEscapeFunction<INVERT, BYTES>, nullptr, nullptr,
+	                           LikeInitLocalState);
+	like_escape.GetSignature()
+	    .AddParameter("string", type)
+	    .AddParameter("like_specifier", type)
+	    .AddParameter("escape_character", type);
+	if (!BYTES) {
+		like_escape.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	}
+	return like_escape;
+}
+
 } // namespace
 
-ScalarFunction NotLikeFun::GetFunction() {
-	ScalarFunction not_like("!~~", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
-	                        RegularLikeFunction<true>, LikeBindFunction, nullptr, LikeInitLocalState);
-	not_like.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
-	not_like.GetSignature().GetParameter(0).SetName("string");
-	not_like.GetSignature().GetParameter(1).SetName("pattern");
-	return not_like;
+ScalarFunctionSet NotLikeFun::GetFunctions() {
+	ScalarFunctionSet set("!~~");
+	set.AddFunction(LikeOverload<true, false>("!~~"));
+	set.AddFunction(LikeOverload<true, true>("!~~"));
+	return set;
 }
 
 ScalarFunction GlobPatternFun::GetFunction() {
@@ -959,25 +1006,22 @@ ScalarFunction NotILikeFun::GetFunction() {
 	return not_ilike;
 }
 
-ScalarFunction LikeFun::GetFunction() {
-	ScalarFunction like("~~", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
-	                    RegularLikeFunction<false>, LikeBindFunction, nullptr, LikeInitLocalState);
-	like.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
-	like.GetSignature().GetParameter(0).SetName("string");
-	like.GetSignature().GetParameter(1).SetName("pattern");
+ScalarFunctionSet LikeFun::GetFunctions() {
+	ScalarFunctionSet set("~~");
+	auto like = LikeOverload<false, false>("~~");
 	like.SetFilterPruneCallback(PatternFilterPrune<false>);
-	return like;
+	set.AddFunction(like);
+	auto like_bytes = LikeOverload<false, true>("~~");
+	like_bytes.SetFilterPruneCallback(PatternFilterPrune<false>);
+	set.AddFunction(like_bytes);
+	return set;
 }
 
-ScalarFunction NotLikeEscapeFun::GetFunction() {
-	ScalarFunction not_like_escape("not_like_escape", {}, LogicalType::BOOLEAN, LikeEscapeFunction<true>, nullptr,
-	                               nullptr, LikeInitLocalState);
-	not_like_escape.GetSignature()
-	    .AddParameter("string", LogicalType::VARCHAR)
-	    .AddParameter("like_specifier", LogicalType::VARCHAR)
-	    .AddParameter("escape_character", LogicalType::VARCHAR);
-	not_like_escape.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
-	return not_like_escape;
+ScalarFunctionSet NotLikeEscapeFun::GetFunctions() {
+	ScalarFunctionSet set("not_like_escape");
+	set.AddFunction(LikeEscapeOverload<true, false>("not_like_escape"));
+	set.AddFunction(LikeEscapeOverload<true, true>("not_like_escape"));
+	return set;
 }
 
 ScalarFunction IlikeEscapeFun::GetFunction() {
@@ -1001,16 +1045,15 @@ ScalarFunction NotIlikeEscapeFun::GetFunction() {
 	not_ilike_escape.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	return not_ilike_escape;
 }
-ScalarFunction LikeEscapeFun::GetFunction() {
-	ScalarFunction like_escape("like_escape", {}, LogicalType::BOOLEAN, LikeEscapeFunction<false>, nullptr, nullptr,
-	                           LikeInitLocalState);
-	like_escape.GetSignature()
-	    .AddParameter("string", LogicalType::VARCHAR)
-	    .AddParameter("like_specifier", LogicalType::VARCHAR)
-	    .AddParameter("escape_character", LogicalType::VARCHAR);
-	like_escape.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+ScalarFunctionSet LikeEscapeFun::GetFunctions() {
+	ScalarFunctionSet set("like_escape");
+	auto like_escape = LikeEscapeOverload<false, false>("like_escape");
 	like_escape.SetFilterPruneCallback(PatternFilterPrune<false>);
-	return like_escape;
+	set.AddFunction(like_escape);
+	auto like_escape_bytes = LikeEscapeOverload<false, true>("like_escape");
+	like_escape_bytes.SetFilterPruneCallback(PatternFilterPrune<false>);
+	set.AddFunction(like_escape_bytes);
+	return set;
 }
 
 //===--------------------------------------------------------------------===//

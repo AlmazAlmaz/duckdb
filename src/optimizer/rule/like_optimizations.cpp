@@ -162,6 +162,8 @@ unique_ptr<Expression> LikeOptimizationRule::Apply(LogicalOperator &op, vector<r
 		return BoundComparisonExpression::Create(
 		    is_not_like ? ExpressionType::COMPARE_NOTEQUAL : ExpressionType::COMPARE_EQUAL,
 		    std::move(root.GetChildrenMutable()[0]), std::move(root.GetChildrenMutable()[1]));
+	} else if (root.GetChildren()[0]->GetReturnType().id() != LogicalTypeId::VARCHAR) {
+		return nullptr;
 	} else if (PatternIsPrefix(patt_str, match_type)) {
 		// Prefix LIKE pattern : [^%_]*[%]+, ignoring underscore
 		return ApplyRule(root, "prefix", patt_str, is_not_like, match_type);

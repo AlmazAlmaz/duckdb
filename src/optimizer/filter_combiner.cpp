@@ -618,6 +618,7 @@ FilterPushdownResult FilterCombiner::TryPushdownLikeFilter(TableFilterSet &table
 		return FilterPushdownResult::NO_PUSHDOWN;
 	}
 	if (func.GetChildren()[0]->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
+	    func.GetChildren()[0]->GetReturnType().id() != LogicalTypeId::VARCHAR ||
 	    func.GetChildren()[1]->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 		// we need col LIKE 'literal' in order to generate extra filters
 		return FilterPushdownResult::NO_PUSHDOWN;
