@@ -1059,6 +1059,7 @@ bool ShellState::TryForwardDatabaseDdl(const duckdb::SQLStatement &statement, co
 */
 void ShellState::SetupPrettyExplain(duckdb::SQLStatement &statement) {
 	auto &explain = statement.Cast<duckdb::ExplainStatement>();
+	last_explain_analyze = explain.explain_type == duckdb::ExplainType::EXPLAIN_ANALYZE;
 	if (explain.format != duckdb::ProfilerPrintFormat::Default()) {
 		// the user explicitly requested an output format (e.g. EXPLAIN (FORMAT json))
 		return;

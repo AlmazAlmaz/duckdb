@@ -226,6 +226,7 @@ public:
 	bool last_result_referenced = false;
 	//! Whether the last EXPLAIN ANALYZE tree folded any operators (so ".last" has a fuller tree to show)
 	bool last_explain_hid_content = false;
+	bool last_explain_analyze = false;
 	//! The widest rendered line of the last EXPLAIN tree, in display columns (used for the pager-width decision)
 	idx_t last_explain_width = 0;
 	//! If the following flag is set, then command execution stops at an error

@@ -1197,19 +1197,23 @@ public:
 
 	void RenderRow(PrintStream &out, ResultMetadata &result, RowData &row) override {
 		auto &data = row.data;
-		if (data.size() != 2) {
+		if (data.empty()) {
 			return;
 		}
-		out.Print(data[1]);
-		auto plan = data[1].GetString();
+		out.Print(data.back());
+		auto plan = data.back().GetString();
 		if (!plan.empty() && plan.back() != '\n') {
 			out.Print("\n");
 		}
+		printed_plan = printed_plan || !plan.empty();
+	}
+
+	void RenderFooter(PrintStream &out, ResultMetadata &result) override {
 		// after EXPLAIN ANALYZE (interactive), point users at the full (expanded) tree when the pretty tree folded
 		// low-impact operators, and always at the ".web" command which opens the profile in a browser.
 		// (skip it for EXPLAIN ANALYZE (FORMAT WEB), whose result value is empty and which already opened the profile)
-		if (out.SupportsHighlight() && state.stdin_is_interactive && state.stdout_is_console &&
-		    !data[1].GetString().empty() && data[0].GetString() == "analyzed_plan") {
+		if (out.SupportsHighlight() && state.stdin_is_interactive && state.stdout_is_console && printed_plan &&
+		    state.last_explain_analyze) {
 			string hint = state.last_explain_hid_content
 			                  ? "\ntype .last to show the full tree, .web to open it in a browser\n"
 			                  : "\ntype .web to open the query profile in a browser\n";
@@ -1230,23 +1234,30 @@ public:
 		}
 		idx_t row_count = 0;
 		for (auto &chunk : result.chunks) {
-			auto &plan_vector = chunk->data[1];
+			auto &plan_vector = chunk->data.back();
 			auto string_data = duckdb::FlatVector::GetData<duckdb::string_t>(plan_vector);
 			for (idx_t r = 0; r < chunk->size(); r++) {
 				if (duckdb::FlatVector::IsNull(plan_vector, r)) {
 					continue;
 				}
-				for (idx_t s_idx = 0; s_idx < string_data[r].GetSize(); s_idx++) {
-					auto c = string_data[r].GetData()[s_idx];
-					if (c == '\n') {
+				auto size = string_data[r].GetSize();
+				auto text = string_data[r].GetData();
+				for (idx_t s_idx = 0; s_idx < size; s_idx++) {
+					if (text[s_idx] == '\n') {
 						row_count++;
 					}
+				}
+				if (size > 0 && text[size - 1] != '\n') {
+					row_count++;
 				}
 			}
 		}
 		// page the tree when it does not fit on the screen (too tall, or too wide for the terminal)
 		return state.ShouldUsePagerForSize(row_count, state.last_explain_width);
 	}
+
+private:
+	bool printed_plan = false;
 };
 
 class ModeListRenderer : public RowRenderer {
