@@ -57,7 +57,7 @@ def get_file_list():
 
 
 scripts_dir = os.path.dirname(os.path.abspath(__file__))
-version_map_path = os.path.join(scripts_dir, "..", "src", "storage", "version_map.json")
+version_map_path = os.path.join(scripts_dir, "..", "..", "duckdb_versions", "version_map.json")
 version_map_file = file = open(version_map_path)
 version_map = json.load(version_map_file)
 

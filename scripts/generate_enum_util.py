@@ -79,7 +79,6 @@ blacklist = [
     "VariantBasicType",
     "VariantPrimitiveType",
     "SyncState",
-    "StorageVersion",
     "FoldResult",
     "SchedulerClass",
 ]
