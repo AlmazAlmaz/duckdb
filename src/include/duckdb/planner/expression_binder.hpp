@@ -164,6 +164,8 @@ public:
 	static void QualifyColumnNames(ExpressionBinder &binder, unique_ptr<ParsedExpression> &expr);
 	static void QualifyColumnNames(HavingBinder &having_binder, unique_ptr<ParsedExpression> &expr);
 
+	static void VerifyLambdaSyntax(ClientContext &context, LambdaSyntaxType syntax_type);
+
 	//! Create the qualifier that resolves names against this binder's scope, with this binder's hooks
 	virtual unique_ptr<ColumnQualifier> CreateColumnQualifier();
 

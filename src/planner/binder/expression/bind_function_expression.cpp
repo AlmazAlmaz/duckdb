@@ -203,7 +203,19 @@ ListReduceRebindResult MaybeRebindListReduceLambda(ClientContext &context, idx_t
 	return result;
 }
 
+constexpr const char *DEPRECATED_LAMBDA_ARROW =
+    "Deprecated lambda arrow (->) detected. Please transition to the new lambda syntax, "
+    "i.e., lambda x, i: x + i.\n"
+    "Use SET lambda_syntax='ENABLE_SINGLE_ARROW' to revert to the deprecated behavior.";
+
 } // namespace
+
+void ExpressionBinder::VerifyLambdaSyntax(ClientContext &context, LambdaSyntaxType syntax_type) {
+	if (syntax_type == LambdaSyntaxType::SINGLE_ARROW &&
+	    Settings::Get<LambdaSyntaxSetting>(context) != LambdaSyntax::ENABLE_SINGLE_ARROW) {
+		throw BinderException(DEPRECATED_LAMBDA_ARROW);
+	}
+}
 
 BindResult ExpressionBinder::TryBindLambdaOrJson(FunctionExpression &function, idx_t depth, CatalogEntry &func,
                                                  const LambdaSyntaxType syntax_type) {
@@ -211,13 +223,6 @@ BindResult ExpressionBinder::TryBindLambdaOrJson(FunctionExpression &function, i
 		// lambda x: x + 1 syntax.
 		return BindLambdaFunction(function, func.Cast<ScalarFunctionCatalogEntry>(), depth);
 	}
-
-	auto setting = Settings::Get<LambdaSyntaxSetting>(context);
-	bool invalid_syntax = setting != LambdaSyntax::ENABLE_SINGLE_ARROW && syntax_type == LambdaSyntaxType::SINGLE_ARROW;
-	bool warn_deprecated_syntax = setting == LambdaSyntax::DEFAULT && syntax_type == LambdaSyntaxType::SINGLE_ARROW;
-	const string msg = "Deprecated lambda arrow (->) detected. Please transition to the new lambda syntax, "
-	                   "i.e., lambda x, i: x + i.\n"
-	                   "Use SET lambda_syntax='ENABLE_SINGLE_ARROW' to revert to the deprecated behavior.";
 
 	BindResult lambda_bind_result;
 	ErrorData error;
@@ -227,21 +232,16 @@ BindResult ExpressionBinder::TryBindLambdaOrJson(FunctionExpression &function, i
 		error = ErrorData(ex);
 	}
 
-	if (error.HasError() && error.Type() == ExceptionType::PARAMETER_NOT_RESOLVED && invalid_syntax) {
-		ErrorData deprecation_error(ExceptionType::BINDER, msg);
-		deprecation_error.Throw();
-	} else if (error.HasError()) {
+	if (error.HasError()) {
+		if (error.Type() == ExceptionType::PARAMETER_NOT_RESOLVED) {
+			VerifyLambdaSyntax(context, syntax_type);
+		}
 		error.Throw();
 	}
 
 	if (!lambda_bind_result.HasError()) {
-		if (!invalid_syntax) {
-			if (warn_deprecated_syntax) {
-				DUCKDB_LOG_WARNING(context, msg);
-			}
-			return lambda_bind_result;
-		}
-		throw BinderException(msg);
+		VerifyLambdaSyntax(context, syntax_type);
+		return lambda_bind_result;
 	}
 
 	// The lambda reading failed - the JSON reading binds the same nodes from scratch. Any child the
