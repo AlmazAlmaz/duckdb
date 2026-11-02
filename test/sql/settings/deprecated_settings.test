@@ -20,11 +20,6 @@ SET legacy_disable_null_type=true;
 The 'legacy_disable_null_type' setting is deprecated and will be removed in a future release.
 
 statement error
-SET legacy_metrics_format=true;
-----
-The 'legacy_metrics_format' setting is deprecated and will be removed in a future release.
-
-statement error
 SET error_on_division_by_zero=false;
 ----
 The 'error_on_division_by_zero' setting is deprecated and will be removed in a future release.

@@ -1880,10 +1880,6 @@ void LegacyDisableNullTypeSetting::OnSet(SettingCallbackInfo &info, Value &) {
 	WarnDeprecatedSetting(info, LegacyDisableNullTypeSetting::Name);
 }
 
-void LegacyMetricsFormatSetting::OnSet(SettingCallbackInfo &info, Value &) {
-	WarnDeprecatedSetting(info, LegacyMetricsFormatSetting::Name);
-}
-
 void ProduceArrowStringViewSetting::OnSet(SettingCallbackInfo &info, Value &) {
 	WarnDeprecatedSetting(info, ProduceArrowStringViewSetting::Name);
 }

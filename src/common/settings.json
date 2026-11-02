@@ -1167,17 +1167,6 @@
         ]
     },
     {
-        "name": "legacy_metrics_format",
-        "description": "Deprecated setting. When enabled, profiling output uses the legacy flat format instead of the current grouped format.",
-        "type": "BOOLEAN",
-        "default_scope": "local",
-        "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ],
-        "is_deprecated": true
-    },
-    {
         "name": "lock_configuration",
         "description": "Whether configurations can be altered.",
         "type": "BOOLEAN",
