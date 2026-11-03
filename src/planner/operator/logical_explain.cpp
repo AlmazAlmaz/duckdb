@@ -48,14 +48,17 @@ unique_ptr<LogicalOperator> LogicalExplain::CreateSQLResult(ClientContext &conte
 			throw NotImplementedException({{"sql_export_unsupported", "true"}}, message);
 		}
 	}
-	vector<LogicalType> result_types {LogicalType::VARCHAR, LogicalType::VARCHAR};
+	const bool keyed = output_shape != ExplainFormatShape::PG;
+	vector<LogicalType> result_types(keyed ? 2 : 1, LogicalType::VARCHAR);
 	auto collection =
 	    make_uniq<ColumnDataCollection>(context, result_types, ColumnDataAllocatorType::IN_MEMORY_ALLOCATOR);
 	if (exported.IsSuccess()) {
 		DataChunk chunk;
 		chunk.Initialize(Allocator::Get(context), result_types);
-		chunk.data[0].Append(Value("sql"));
-		chunk.data[1].Append(Value(exported.GetValue().query->ToString()));
+		if (keyed) {
+			chunk.data[0].Append(Value("sql"));
+		}
+		chunk.data.back().Append(Value(exported.GetValue().query->ToString()));
 		collection->Append(chunk);
 	}
 	return make_uniq<LogicalColumnDataGet>(table_index, std::move(result_types), std::move(collection));

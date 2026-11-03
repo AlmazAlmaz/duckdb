@@ -21,6 +21,11 @@ EXPLAIN ANALYZE (FORMAT json) SELECT 1
 ----
 <REGEX>:\{.*"children".*\}
 
+query I
+EXPLAIN (SQL) SELECT 42 AS answer
+----
+SELECT CAST(42 AS INTEGER) AS answer
+
 statement ok
 SET explain_output = 'all';
 
