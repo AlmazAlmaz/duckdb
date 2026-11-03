@@ -1197,9 +1197,6 @@ public:
 
 	void RenderRow(PrintStream &out, ResultMetadata &result, RowData &row) override {
 		auto &data = row.data;
-		if (data.empty()) {
-			return;
-		}
 		out.Print(data.back());
 		auto plan = data.back().GetString();
 		if (!plan.empty() && plan.back() != '\n') {
