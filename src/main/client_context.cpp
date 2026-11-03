@@ -1008,9 +1008,40 @@ void ClientContext::WarnUser(const string &message) {
 	}
 }
 
-void ClientContext::Interrupt() {
+ABSL_CONST_INIT static mutex await_mutex(absl::kConstInit);
+
+static absl::Duration TimeLeft(const optional_idx &deadline) {
+	if (!deadline.IsValid()) {
+		return absl::InfiniteDuration();
+	}
+	auto left = static_cast<int64_t>(deadline.GetIndex()) - TimePoint::Now();
+	return absl::Nanoseconds(TimePoint::ToNanos(left));
+}
+
+void ClientContext::InterruptFromSignal() {
 	ClientInterruptState expected = ClientInterruptState::NOT_INTERRUPTED;
 	interrupt_state.compare_exchange_strong(expected, ClientInterruptState::INTERRUPTED);
+}
+
+void ClientContext::Interrupt() {
+	ClientInterruptState expected = ClientInterruptState::NOT_INTERRUPTED;
+	if (interrupt_state.compare_exchange_strong(expected, ClientInterruptState::INTERRUPTED)) {
+		Notify();
+	}
+}
+
+mutex &ClientContext::AwaitMutex() {
+	return await_mutex;
+}
+
+void ClientContext::Notify() {
+	lock_guard<mutex> wake(await_mutex);
+}
+
+void ClientContext::Block(const absl::Condition &ready) {
+	while (!await_mutex.AwaitWithTimeout(ready, TimeLeft(query_deadline)) || IsInterrupted()) {
+		InterruptCheck();
+	}
 }
 
 bool ClientContext::IsInterrupted() const {

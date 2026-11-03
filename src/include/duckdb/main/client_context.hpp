@@ -174,6 +174,7 @@ public:
 	DUCKDB_API void WarnUser(const string &message);
 
 	//! Interrupts the running query. Async-signal-safe: sets a flag and nothing else
+	DUCKDB_API void InterruptFromSignal();
 	DUCKDB_API void Interrupt();
 	DUCKDB_API bool IsInterrupted() const;
 	DUCKDB_API void ClearInterrupt();
@@ -183,6 +184,19 @@ public:
 
 	//! Check for interrupt or timeout, throws InterruptException if triggered
 	DUCKDB_API void InterruptCheck() const;
+
+	template <typename F>
+	void Await(const F &condition) {
+		if (condition()) {
+			return;
+		}
+		auto ready = [&] {
+			return condition() || IsInterrupted();
+		};
+		Block(absl::Condition(&ready));
+	}
+	DUCKDB_API static mutex &AwaitMutex();
+	DUCKDB_API static void Notify();
 
 	//! Enable query profiling
 	DUCKDB_API void EnableProfiling();
@@ -351,6 +365,8 @@ private:
 	friend class Parser;
 	friend class ParseIterator;
 	ParserOptions GetParserOptions();
+
+	DUCKDB_API void Block(const absl::Condition &ready);
 
 	//! Runs a transaction statement without going through the local query processing pipeline.
 	void RunTransactionStatement(const TransactionInfo &info);

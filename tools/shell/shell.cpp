@@ -806,7 +806,7 @@ static void InterruptHandler(int NotUsed) {
 		ShellState::Exit(1);
 	}
 	if (state.conn) {
-		state.conn->Interrupt();
+		state.conn->context->InterruptFromSignal();
 	}
 }
 }
