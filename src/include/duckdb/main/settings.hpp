@@ -2066,21 +2066,6 @@ struct LegacyDisableNullTypeSetting {
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
-struct LegacyMetricsFormatSetting {
-	using RETURN_TYPE = bool;
-	static constexpr const char *Name = "legacy_metrics_format";
-	static constexpr const char *Description = "Deprecated setting. When enabled, profiling output uses the legacy "
-	                                           "flat format instead of the current grouped format.";
-	static constexpr const char *InputType = "BOOLEAN";
-	static constexpr bool IsDebug = false;
-	static constexpr bool IsDeprecated = true;
-	static constexpr bool NoResetAll = false;
-	static constexpr const char *DefaultValue = "false";
-	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
-	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
-	static void OnSet(SettingCallbackInfo &info, Value &input);
-};
-
 struct LockConfigurationSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "lock_configuration";

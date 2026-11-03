@@ -247,7 +247,6 @@
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/storage/statistics/variant_stats.hpp"
 #include "duckdb/storage/storage_index.hpp"
-#include "duckdb/storage/storage_info.hpp"
 #include "duckdb/storage/storage_options.hpp"
 #include "duckdb/storage/table/chunk_info.hpp"
 #include "duckdb/storage/table/column_data.hpp"
@@ -2405,9 +2404,7 @@ const StringUtil::EnumStringLiteral *GetExpressionClassValues() {
 		{ static_cast<uint32_t>(ExpressionClass::PATTERN), "PATTERN" },
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_AGGREGATE), "BOUND_AGGREGATE" },
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_CASE), "BOUND_CASE" },
-		{ static_cast<uint32_t>(ExpressionClass::LEGACY_BOUND_CAST), "LEGACY_BOUND_CAST" },
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_COLUMN_REF), "BOUND_COLUMN_REF" },
-		{ static_cast<uint32_t>(ExpressionClass::LEGACY_BOUND_COMPARISON), "LEGACY_BOUND_COMPARISON" },
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_CONJUNCTION), "BOUND_CONJUNCTION" },
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_CONSTANT), "BOUND_CONSTANT" },
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_DEFAULT), "BOUND_DEFAULT" },
@@ -2417,7 +2414,6 @@ const StringUtil::EnumStringLiteral *GetExpressionClassValues() {
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_REF), "BOUND_REF" },
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_SUBQUERY), "BOUND_SUBQUERY" },
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_WINDOW), "BOUND_WINDOW" },
-		{ static_cast<uint32_t>(ExpressionClass::LEGACY_BOUND_BETWEEN), "LEGACY_BOUND_BETWEEN" },
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_UNNEST), "BOUND_UNNEST" },
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_LAMBDA), "BOUND_LAMBDA" },
 		{ static_cast<uint32_t>(ExpressionClass::BOUND_LAMBDA_REF), "BOUND_LAMBDA_REF" },
@@ -2428,12 +2424,12 @@ const StringUtil::EnumStringLiteral *GetExpressionClassValues() {
 
 template<>
 const char* EnumUtil::ToChars<ExpressionClass>(ExpressionClass value) {
-	return StringUtil::EnumToString(GetExpressionClassValues(), 41, "ExpressionClass", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetExpressionClassValues(), 38, "ExpressionClass", static_cast<uint32_t>(value));
 }
 
 template<>
 ExpressionClass EnumUtil::FromString<ExpressionClass>(std::string_view value) {
-	return static_cast<ExpressionClass>(StringUtil::StringToEnum(GetExpressionClassValues(), 41, "ExpressionClass", value));
+	return static_cast<ExpressionClass>(StringUtil::StringToEnum(GetExpressionClassValues(), 38, "ExpressionClass", value));
 }
 
 const StringUtil::EnumStringLiteral *GetExpressionTailTypeValues() {
@@ -6198,53 +6194,6 @@ SequenceInfo EnumUtil::FromString<SequenceInfo>(std::string_view value) {
 	return static_cast<SequenceInfo>(StringUtil::StringToEnum(GetSequenceInfoValues(), 7, "SequenceInfo", value));
 }
 
-const StringUtil::EnumStringLiteral *GetSerializationVersionDeprecatedValues() {
-	static constexpr StringUtil::EnumStringLiteral values[] {
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V0_10_0), "V0_10_0" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V0_10_1), "V0_10_1" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V0_10_2), "V0_10_2" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V0_10_3), "V0_10_3" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_0_0), "V1_0_0" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_1_0), "V1_1_0" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_1_1), "V1_1_1" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_1_2), "V1_1_2" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_1_3), "V1_1_3" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_2_0), "V1_2_0" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_2_1), "V1_2_1" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_2_2), "V1_2_2" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_3_0), "V1_3_0" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_3_1), "V1_3_1" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_3_2), "V1_3_2" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_4_0), "V1_4_0" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_4_1), "V1_4_1" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_4_2), "V1_4_2" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_4_3), "V1_4_3" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_4_4), "V1_4_4" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_4_5), "V1_4_5" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_5_0), "V1_5_0" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_5_1), "V1_5_1" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_5_2), "V1_5_2" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_5_3), "V1_5_3" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_5_4), "V1_5_4" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_5_5), "V1_5_5" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_5_6), "V1_5_6" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::V2_0_0), "V2_0_0" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::LATEST), "LATEST" },
-		{ static_cast<uint32_t>(SerializationVersionDeprecated::INVALID), "INVALID" }
-	};
-	return values;
-}
-
-template<>
-const char* EnumUtil::ToChars<SerializationVersionDeprecated>(SerializationVersionDeprecated value) {
-	return StringUtil::EnumToString(GetSerializationVersionDeprecatedValues(), 31, "SerializationVersionDeprecated", static_cast<uint32_t>(value));
-}
-
-template<>
-SerializationVersionDeprecated EnumUtil::FromString<SerializationVersionDeprecated>(std::string_view value) {
-	return static_cast<SerializationVersionDeprecated>(StringUtil::StringToEnum(GetSerializationVersionDeprecatedValues(), 31, "SerializationVersionDeprecated", value));
-}
-
 const StringUtil::EnumStringLiteral *GetSetOperationTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(SetOperationType::NONE), "NONE" },
@@ -6899,30 +6848,19 @@ TableFilterPushdown EnumUtil::FromString<TableFilterPushdown>(std::string_view v
 
 const StringUtil::EnumStringLiteral *GetTableFilterTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
-		{ static_cast<uint32_t>(TableFilterType::LEGACY_CONSTANT_COMPARISON), "LEGACY_CONSTANT_COMPARISON" },
-		{ static_cast<uint32_t>(TableFilterType::LEGACY_IS_NULL), "LEGACY_IS_NULL" },
-		{ static_cast<uint32_t>(TableFilterType::LEGACY_IS_NOT_NULL), "LEGACY_IS_NOT_NULL" },
-		{ static_cast<uint32_t>(TableFilterType::LEGACY_CONJUNCTION_OR), "LEGACY_CONJUNCTION_OR" },
-		{ static_cast<uint32_t>(TableFilterType::LEGACY_CONJUNCTION_AND), "LEGACY_CONJUNCTION_AND" },
-		{ static_cast<uint32_t>(TableFilterType::LEGACY_STRUCT_EXTRACT), "LEGACY_STRUCT_EXTRACT" },
-		{ static_cast<uint32_t>(TableFilterType::LEGACY_OPTIONAL_FILTER), "LEGACY_OPTIONAL_FILTER" },
-		{ static_cast<uint32_t>(TableFilterType::LEGACY_IN_FILTER), "LEGACY_IN_FILTER" },
-		{ static_cast<uint32_t>(TableFilterType::LEGACY_DYNAMIC_FILTER), "LEGACY_DYNAMIC_FILTER" },
-		{ static_cast<uint32_t>(TableFilterType::EXPRESSION_FILTER), "EXPRESSION_FILTER" },
-		{ static_cast<uint32_t>(TableFilterType::LEGACY_BLOOM_FILTER), "LEGACY_BLOOM_FILTER" },
-		{ static_cast<uint32_t>(TableFilterType::LEGACY_PREFIX_RANGE_FILTER), "LEGACY_PREFIX_RANGE_FILTER" }
+		{ static_cast<uint32_t>(TableFilterType::EXPRESSION_FILTER), "EXPRESSION_FILTER" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<TableFilterType>(TableFilterType value) {
-	return StringUtil::EnumToString(GetTableFilterTypeValues(), 12, "TableFilterType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetTableFilterTypeValues(), 1, "TableFilterType", static_cast<uint32_t>(value));
 }
 
 template<>
 TableFilterType EnumUtil::FromString<TableFilterType>(std::string_view value) {
-	return static_cast<TableFilterType>(StringUtil::StringToEnum(GetTableFilterTypeValues(), 12, "TableFilterType", value));
+	return static_cast<TableFilterType>(StringUtil::StringToEnum(GetTableFilterTypeValues(), 1, "TableFilterType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetTableFunctionIdentifierConversionValues() {

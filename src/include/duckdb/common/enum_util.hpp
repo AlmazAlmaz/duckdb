@@ -564,8 +564,6 @@ enum class SelectivityOptionalFilterType : uint8_t;
 
 enum class SequenceInfo : uint8_t;
 
-enum class SerializationVersionDeprecated : uint64_t;
-
 enum class SetOperationType : uint8_t;
 
 enum class SetScope : uint8_t;
@@ -1511,9 +1509,6 @@ const char* EnumUtil::ToChars<SelectivityOptionalFilterType>(SelectivityOptional
 
 template<>
 const char* EnumUtil::ToChars<SequenceInfo>(SequenceInfo value);
-
-template<>
-const char* EnumUtil::ToChars<SerializationVersionDeprecated>(SerializationVersionDeprecated value);
 
 template<>
 const char* EnumUtil::ToChars<SetOperationType>(SetOperationType value);
@@ -2532,9 +2527,6 @@ SelectivityOptionalFilterType EnumUtil::FromString<SelectivityOptionalFilterType
 
 template<>
 SequenceInfo EnumUtil::FromString<SequenceInfo>(std::string_view value);
-
-template<>
-SerializationVersionDeprecated EnumUtil::FromString<SerializationVersionDeprecated>(std::string_view value);
 
 template<>
 SetOperationType EnumUtil::FromString<SetOperationType>(std::string_view value);

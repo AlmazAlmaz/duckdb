@@ -988,13 +988,13 @@ TableColumn TableColumn::Deserialize(Deserializer &deserializer) {
 }
 
 void TableFilterSet::Serialize(Serializer &serializer) const {
-	serializer.WritePropertyWithDefault<map<ProjectionIndex, unique_ptr<TableFilter>>>(100, "filters", GetTableFiltersForSerialization(serializer));
+	serializer.WritePropertyWithDefault<map<ProjectionIndex, unique_ptr<TableFilter>>>(100, "filters", filters);
 	serializer.WritePropertyWithDefault<vector<unique_ptr<TableFilter>>>(101, "multi_column_filters", multi_column_filters, vector<unique_ptr<TableFilter>>());
 }
 
 TableFilterSet TableFilterSet::Deserialize(Deserializer &deserializer) {
 	TableFilterSet result;
-	deserializer.ReadPropertyWithDefault<map<ProjectionIndex, unique_ptr<TableFilter>>>(100, "filters", result.GetTableFiltersForDeserialization(deserializer));
+	deserializer.ReadPropertyWithDefault<map<ProjectionIndex, unique_ptr<TableFilter>>>(100, "filters", result.filters);
 	deserializer.ReadPropertyWithExplicitDefault<vector<unique_ptr<TableFilter>>>(101, "multi_column_filters", result.multi_column_filters, vector<unique_ptr<TableFilter>>());
 	return result;
 }

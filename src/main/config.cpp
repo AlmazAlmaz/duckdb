@@ -209,7 +209,6 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(LateMaterializationLookupMaxRowsSetting),
     DUCKDB_SETTING(LateMaterializationMaxRowsSetting),
     DUCKDB_SETTING_CALLBACK(LegacyDisableNullTypeSetting),
-    DUCKDB_SETTING_CALLBACK(LegacyMetricsFormatSetting),
     DUCKDB_SETTING(LockConfigurationSetting),
     DUCKDB_SETTING_CALLBACK(LogQueryPathSetting),
     DUCKDB_GLOBAL(LoggingLevel),
