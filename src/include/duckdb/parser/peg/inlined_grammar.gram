@@ -763,7 +763,13 @@ UnreservedKeyword <- 'ABORT' /
 'ZONE'
 AlterStatement <- 'ALTER' AlterOptions
 
-AlterOptions <- AlterTableStmt / AlterViewStmt / AlterIndexStmt / AlterFunctionStmt / AlterSequenceStmt / AlterDatabaseStmt / AlterSchemaStmt / AlterJobStmt
+AlterOptions <- AlterSetSchemaStmt / AlterTableStmt / AlterViewStmt / AlterIndexStmt / AlterFunctionStmt / AlterSequenceStmt / AlterDatabaseStmt / AlterSchemaStmt / AlterJobStmt
+
+AlterSetSchemaStmt <- SetSchemaEntryType IfExists? BaseTableName 'SET' 'SCHEMA' ColId
+SetSchemaEntryType <- CommentTable / CommentView / CommentSequence / CommentType / CommentFunction / SetSchemaProcedure /
+        CommentMacroTable / CommentMacro / SetSchemaDictionary
+SetSchemaProcedure <- 'PROCEDURE'
+SetSchemaDictionary <- 'TEXT' 'SEARCH' 'DICTIONARY'
 
 AlterJobStmt <- 'JOB' IfExists? QualifiedName AlterJobAction
 AlterJobAction <- AlterJobRename / AlterJobSuspend / AlterJobResume / AlterJobSetSchedule

@@ -44,6 +44,18 @@ static const TransformFrameOps ALTER_STATEMENT_OPS = {"AlterStatement",
 static const TransformFrameOps ALTER_OPTIONS_OPS = {"AlterOptions",
                                                     &PEGTransformerFactory::InitializeAlterOptionsTrampoline,
                                                     &PEGTransformerFactory::FinalizeAlterOptionsTrampoline, true};
+static const TransformFrameOps ALTER_SET_SCHEMA_STMT_OPS = {
+    "AlterSetSchemaStmt", &PEGTransformerFactory::InitializeAlterSetSchemaStmtTrampoline,
+    &PEGTransformerFactory::FinalizeAlterSetSchemaStmtTrampoline};
+static const TransformFrameOps SET_SCHEMA_ENTRY_TYPE_OPS = {
+    "SetSchemaEntryType", &PEGTransformerFactory::InitializeSetSchemaEntryTypeTrampoline,
+    &PEGTransformerFactory::FinalizeSetSchemaEntryTypeTrampoline, true};
+static const TransformFrameOps SET_SCHEMA_PROCEDURE_OPS = {
+    "SetSchemaProcedure", &PEGTransformerFactory::InitializeSetSchemaProcedureTrampoline,
+    &PEGTransformerFactory::FinalizeSetSchemaProcedureTrampoline};
+static const TransformFrameOps SET_SCHEMA_DICTIONARY_OPS = {
+    "SetSchemaDictionary", &PEGTransformerFactory::InitializeSetSchemaDictionaryTrampoline,
+    &PEGTransformerFactory::FinalizeSetSchemaDictionaryTrampoline};
 static const TransformFrameOps ALTER_JOB_STMT_OPS = {"AlterJobStmt",
                                                      &PEGTransformerFactory::InitializeAlterJobStmtTrampoline,
                                                      &PEGTransformerFactory::FinalizeAlterJobStmtTrampoline};
@@ -3685,6 +3697,10 @@ PEGTransformerFactory::GeneratedTransformFrameOps() {
 	    {"SettingName", &SETTING_NAME_OPS},
 	    {"AlterStatement", &ALTER_STATEMENT_OPS},
 	    {"AlterOptions", &ALTER_OPTIONS_OPS},
+	    {"AlterSetSchemaStmt", &ALTER_SET_SCHEMA_STMT_OPS},
+	    {"SetSchemaEntryType", &SET_SCHEMA_ENTRY_TYPE_OPS},
+	    {"SetSchemaProcedure", &SET_SCHEMA_PROCEDURE_OPS},
+	    {"SetSchemaDictionary", &SET_SCHEMA_DICTIONARY_OPS},
 	    {"AlterJobStmt", &ALTER_JOB_STMT_OPS},
 	    {"AlterJobAction", &ALTER_JOB_ACTION_OPS},
 	    {"AlterJobRename", &ALTER_JOB_RENAME_OPS},
@@ -5029,6 +5045,79 @@ arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizeAlterOptionsTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process) {
 	auto result = process.TakeResult<unique_ptr<AlterInfo>>(0);
 	return transformer.MakeResult<unique_ptr<AlterInfo>>(std::move(result));
+}
+
+void PEGTransformerFactory::InitializeAlterSetSchemaStmtTrampoline(PEGTransformer &transformer,
+                                                                   GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	process.ReserveChildSlots(4);
+	process.PushChild({list_pr.GetChild(5)}, 3);
+	process.PushChild({list_pr.GetChild(2)}, 2);
+	auto &if_exists_opt = list_pr.GetChild(1).Cast<OptionalParseResult>();
+	if (if_exists_opt.HasResult()) {
+		process.PushChild({if_exists_opt.GetResult()}, 1);
+	}
+	process.PushChild({list_pr.GetChild(0)}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeAlterSetSchemaStmtTrampoline(PEGTransformer &transformer,
+                                                            GeneratedTransformProcess &process) {
+	auto set_schema_entry_type = process.TakeResult<CatalogType>(0);
+	optional<bool> if_exists {};
+	if (process.child_results[1]) {
+		if_exists = process.TakeResult<bool>(1);
+	}
+	auto base_table_name = process.TakeResult<unique_ptr<BaseTableRef>>(2);
+	auto col_id = process.TakeResult<Identifier>(3);
+	auto result =
+	    TransformAlterSetSchemaStmt(transformer, set_schema_entry_type, if_exists, std::move(base_table_name), col_id);
+	return transformer.MakeResult<unique_ptr<AlterInfo>>(std::move(result));
+}
+
+void PEGTransformerFactory::InitializeSetSchemaEntryTypeTrampoline(PEGTransformer &transformer,
+                                                                   GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	auto &choice_pr = list_pr.Child<ChoiceParseResult>(0);
+	auto &choice_result = choice_pr.GetResult();
+	process.ReserveChildSlots(1);
+	auto child_rule = choice_result.GetRule();
+	auto has_transform_process = child_rule && child_rule->transform_process;
+	if (!has_transform_process) {
+		throw InternalException("No transform process registered for rule '%s'", choice_result.Name());
+	}
+	process.PushChild({*child_rule, choice_result}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeSetSchemaEntryTypeTrampoline(PEGTransformer &transformer,
+                                                            GeneratedTransformProcess &process) {
+	auto result = process.TakeResult<CatalogType>(0);
+	return transformer.MakeResult<CatalogType>(result);
+}
+
+void PEGTransformerFactory::InitializeSetSchemaProcedureTrampoline(PEGTransformer &transformer,
+                                                                   GeneratedTransformProcess &process) {
+	process.ReserveChildSlots(0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeSetSchemaProcedureTrampoline(PEGTransformer &transformer,
+                                                            GeneratedTransformProcess &process) {
+	auto result = TransformSetSchemaProcedure(transformer);
+	return transformer.MakeResult<CatalogType>(result);
+}
+
+void PEGTransformerFactory::InitializeSetSchemaDictionaryTrampoline(PEGTransformer &transformer,
+                                                                    GeneratedTransformProcess &process) {
+	process.ReserveChildSlots(0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeSetSchemaDictionaryTrampoline(PEGTransformer &transformer,
+                                                             GeneratedTransformProcess &process) {
+	auto result = TransformSetSchemaDictionary(transformer);
+	return transformer.MakeResult<CatalogType>(result);
 }
 
 void PEGTransformerFactory::InitializeAlterJobStmtTrampoline(PEGTransformer &transformer,

@@ -832,6 +832,19 @@ public:
 	static void InitializeAlterOptionsTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeAlterOptionsTrampoline(PEGTransformer &transformer,
 	                                                                      GeneratedTransformProcess &process);
+	static void InitializeAlterSetSchemaStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeAlterSetSchemaStmtTrampoline(PEGTransformer &transformer,
+	                                                                            GeneratedTransformProcess &process);
+	static void InitializeSetSchemaEntryTypeTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeSetSchemaEntryTypeTrampoline(PEGTransformer &transformer,
+	                                                                            GeneratedTransformProcess &process);
+	static void InitializeSetSchemaProcedureTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeSetSchemaProcedureTrampoline(PEGTransformer &transformer,
+	                                                                            GeneratedTransformProcess &process);
+	static void InitializeSetSchemaDictionaryTrampoline(PEGTransformer &transformer,
+	                                                    GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeSetSchemaDictionaryTrampoline(PEGTransformer &transformer,
+	                                                                             GeneratedTransformProcess &process);
 	static void InitializeAlterJobStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeAlterJobStmtTrampoline(PEGTransformer &transformer,
 	                                                                      GeneratedTransformProcess &process);
@@ -4939,6 +4952,13 @@ public:
 	                                                                  GeneratedTransformProcess &process);
 	static unique_ptr<SQLStatement> TransformAlterStatement(PEGTransformer &transformer,
 	                                                        unique_ptr<AlterInfo> alter_options);
+	static unique_ptr<AlterInfo> TransformAlterSetSchemaStmt(PEGTransformer &transformer,
+	                                                         const CatalogType &set_schema_entry_type,
+	                                                         const optional<bool> &if_exists,
+	                                                         unique_ptr<BaseTableRef> base_table_name,
+	                                                         const Identifier &col_id);
+	static CatalogType TransformSetSchemaProcedure(PEGTransformer &transformer);
+	static CatalogType TransformSetSchemaDictionary(PEGTransformer &transformer);
 	static unique_ptr<AlterInfo> TransformAlterJobStmt(PEGTransformer &transformer, const optional<bool> &if_exists,
 	                                                   const QualifiedName &qualified_name,
 	                                                   unique_ptr<AlterInfo> alter_job_action);

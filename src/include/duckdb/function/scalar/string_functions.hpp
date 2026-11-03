@@ -432,7 +432,7 @@ struct LikeFun {
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
 
-	static ScalarFunction GetFunction();
+	static ScalarFunctionSet GetFunctions();
 };
 
 struct NotLikeFun {
@@ -442,7 +442,7 @@ struct NotLikeFun {
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
 
-	static ScalarFunction GetFunction();
+	static ScalarFunctionSet GetFunctions();
 };
 
 struct GlobPatternFun {
@@ -482,7 +482,7 @@ struct LikeEscapeFun {
 	static constexpr const char *Example = "like_escape('a%c', 'a$%c', '$')";
 	static constexpr const char *Categories = "string";
 
-	static ScalarFunction GetFunction();
+	static ScalarFunctionSet GetFunctions();
 };
 
 struct SimilarToEscapeFun {
@@ -502,7 +502,7 @@ struct NotLikeEscapeFun {
 	static constexpr const char *Example = "not_like_escape('a%c', 'a$%c', '$')";
 	static constexpr const char *Categories = "string";
 
-	static ScalarFunction GetFunction();
+	static ScalarFunctionSet GetFunctions();
 };
 
 struct IlikeEscapeFun {

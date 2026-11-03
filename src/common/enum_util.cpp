@@ -754,19 +754,20 @@ const StringUtil::EnumStringLiteral *GetAlterTypeValues() {
 		{ static_cast<uint32_t>(AlterType::ALTER_ROLE), "ALTER_ROLE" },
 		{ static_cast<uint32_t>(AlterType::ALTER_INDEX), "ALTER_INDEX" },
 		{ static_cast<uint32_t>(AlterType::REPLACE_DEFINITION), "REPLACE_DEFINITION" },
-		{ static_cast<uint32_t>(AlterType::ALTER_JOB), "ALTER_JOB" }
+		{ static_cast<uint32_t>(AlterType::ALTER_JOB), "ALTER_JOB" },
+		{ static_cast<uint32_t>(AlterType::SET_SCHEMA), "SET_SCHEMA" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<AlterType>(AlterType value) {
-	return StringUtil::EnumToString(GetAlterTypeValues(), 16, "AlterType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetAlterTypeValues(), 17, "AlterType", static_cast<uint32_t>(value));
 }
 
 template<>
 AlterType EnumUtil::FromString<AlterType>(std::string_view value) {
-	return static_cast<AlterType>(StringUtil::StringToEnum(GetAlterTypeValues(), 16, "AlterType", value));
+	return static_cast<AlterType>(StringUtil::StringToEnum(GetAlterTypeValues(), 17, "AlterType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetAlterViewTypeValues() {

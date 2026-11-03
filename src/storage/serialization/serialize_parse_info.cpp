@@ -155,6 +155,9 @@ unique_ptr<ParseInfo> AlterInfo::Deserialize(Deserializer &deserializer) {
 	case AlterType::SET_COMMENT:
 		result = SetCommentInfo::Deserialize(deserializer);
 		break;
+	case AlterType::SET_SCHEMA:
+		result = SetSchemaInfo::Deserialize(deserializer);
+		break;
 	default:
 		throw SerializationException("Unsupported type for deserialization of AlterInfo!");
 	}
@@ -1107,6 +1110,19 @@ void SetPartitionedByInfo::Serialize(Serializer &serializer) const {
 unique_ptr<AlterTableInfo> SetPartitionedByInfo::Deserialize(Deserializer &deserializer) {
 	auto result = duckdb::unique_ptr<SetPartitionedByInfo>(new SetPartitionedByInfo());
 	deserializer.ReadPropertyWithDefault<vector<unique_ptr<ParsedExpression>>>(400, "partition_keys", result->partition_keys);
+	return std::move(result);
+}
+
+void SetSchemaInfo::Serialize(Serializer &serializer) const {
+	AlterInfo::Serialize(serializer);
+	serializer.WriteProperty<CatalogType>(300, "entry_catalog_type", entry_catalog_type);
+	serializer.WritePropertyWithDefault<Identifier>(301, "new_schema", new_schema);
+}
+
+unique_ptr<AlterInfo> SetSchemaInfo::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<SetSchemaInfo>(new SetSchemaInfo());
+	deserializer.ReadProperty<CatalogType>(300, "entry_catalog_type", result->entry_catalog_type);
+	deserializer.ReadPropertyWithDefault<Identifier>(301, "new_schema", result->new_schema);
 	return std::move(result);
 }
 
