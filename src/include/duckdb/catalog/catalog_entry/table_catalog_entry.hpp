@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include "duckdb/catalog/catalog_entry/index_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_set.hpp"
 #include "duckdb/catalog/catalog_transaction.hpp"
@@ -30,7 +29,6 @@ namespace duckdb {
 
 class DataTable;
 class DuckTableEntry;
-class TableLogStorage;
 struct CreateTriggerInfo;
 
 struct RenameColumnInfo;
@@ -78,7 +76,6 @@ public:
 	DUCKDB_API unique_ptr<CreateInfo> GetInfo() const override;
 	DUCKDB_API static void RenameColumn(ColumnList &columns, vector<unique_ptr<Constraint>> &constraints,
 	                                    const RenameColumnInfo &info);
-	static void AssignColumnOids(Catalog &catalog, ColumnList &columns);
 
 	DUCKDB_API virtual bool HasGeneratedColumns() const;
 
@@ -99,10 +96,6 @@ public:
 
 	//! Returns the underlying storage of the table
 	virtual DataTable &GetStorage();
-	//! Returns the DuckTableEntry whose storage backs this table. A catalog that
-	//! delegates storage to a hidden table (e.g. a facade) overrides this so the
-	//! physical insert/update/delete/merge operators target the real table.
-	virtual DuckTableEntry &GetStorageTableEntry(ClientContext &context);
 
 	//! Returns a list of the constraints of the table
 	DUCKDB_API const vector<unique_ptr<Constraint>> &GetConstraints() const;
@@ -139,9 +132,6 @@ public:
 	}
 	//! Returns this entry as a DuckTableEntry, or nullptr if it is not one
 	virtual optional_ptr<DuckTableEntry> TryGetDuckTableEntry() {
-		return nullptr;
-	}
-	virtual optional_ptr<TableLogStorage> GetLogStorage() {
 		return nullptr;
 	}
 
@@ -200,10 +190,7 @@ public:
 	                                                                 TriggerTiming timing, TriggerEventType event_type,
 	                                                                 TriggerForEach for_each) const;
 
-	void AlterDependentIndexes(CatalogTransaction transaction, TableCatalogEntry &previous);
-
 protected:
-	virtual bool OwnsIndex(const IndexCatalogEntry &index) const;
 	void RenameTriggerColumns(ClientContext &context, const RenameColumnInfo &info);
 	void SetTriggerFiring(ClientContext &context, const SetTriggerFiringInfo &info);
 

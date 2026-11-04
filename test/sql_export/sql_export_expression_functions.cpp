@@ -253,8 +253,7 @@ TEST_CASE("Incremental scalar registration preserves live SQL identity",
 		REQUIRE(exported.IsValid());
 		REQUIRE(exported.IsSuccess());
 		REQUIRE(exported.GetValue());
-		REQUIRE(exported.GetValue()->Cast<FunctionExpression>().GetQualifiedName() ==
-		        QualifiedName(Identifier::SystemCatalog(), Identifier::DefaultSchema(), name));
+		REQUIRE(exported.GetValue()->Cast<FunctionExpression>().GetQualifiedName() == QualifiedName(name));
 		plan.reset();
 		auto rebound = target.Query("SELECT " + exported.GetValue()->ToString());
 		REQUIRE_NO_FAIL(*rebound);
@@ -455,9 +454,7 @@ TEST_CASE("Bound expression SQL export canonicalizes native function definitions
 			auto exported = BoundExpressionSQLExporter::Export(*bound, context);
 			REQUIRE(exported.IsSuccess());
 			auto &name = exported.GetValue()->Cast<FunctionExpression>().GetQualifiedName();
-			REQUIRE(name.Name() == Identifier("abs"));
-			REQUIRE(name.Catalog() == Identifier::SystemCatalog());
-			REQUIRE(name.Schema() == Identifier::DefaultSchema());
+			REQUIRE(name == QualifiedName(Identifier("abs")));
 			RequireRoundTrip(connection, *bound->Copy(), context, string(), "abs(-7::INTEGER)");
 		}
 	}

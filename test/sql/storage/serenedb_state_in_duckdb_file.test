@@ -54,7 +54,7 @@ Cannot write RENAME_SEQUENCE to a database file with DuckDB storage version
 statement error
 ALTER SCHEMA sch RENAME TO sch2
 ----
-Cannot write RENAME_SCHEMA to a database file with DuckDB storage version
+Altering schemas is not yet supported
 
 statement ok
 CREATE TABLE trig (a INTEGER)
@@ -79,7 +79,7 @@ ALTER TABLE u ADD UNIQUE (a)
 statement error
 CREATE JOB j AFTER 1 HOUR AS SELECT 1
 ----
-Jobs are not supported by this catalog
+Jobs are not supported in schema "main"
 
 statement ok
 CREATE TABLE sch.in_schema AS SELECT range AS a FROM range(3)

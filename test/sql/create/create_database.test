@@ -4,7 +4,7 @@
 statement error
 CREATE DATABASE mydb;
 ----
-If you need the "serenedb" extension
+CREATE DATABASE is not supported by a duckdb catalog
 
 statement error
 CREATE DATABASE mydb FROM './path';
@@ -14,4 +14,4 @@ syntax error at or near "FROM"
 statement error
 DROP DATABASE mydb
 ----
-Database with name mydb does not exist!
+DROP DATABASE is not supported by a duckdb catalog
