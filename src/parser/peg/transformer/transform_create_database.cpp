@@ -17,9 +17,7 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformCreateDatabaseStatement
 		for (auto &option : *with_list) {
 			auto name = StringUtil::Lower(option.first);
 			if (name != "block_size" && name != "row_group_size") {
-				throw ParserException("Unrecognized CREATE DATABASE option \"%s\": the options are BLOCK_SIZE and "
-				                      "ROW_GROUP_SIZE",
-				                      option.first);
+				throw ParserException("option \"%s\" not recognized", option.first);
 			}
 			if (option.second->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 				throw ParserException("CREATE DATABASE option \"%s\" must be a constant", option.first);
