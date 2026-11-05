@@ -60,7 +60,7 @@
 #include "duckdb/main/database_manager.hpp"
 
 namespace duckdb {
-enum class WALReplayState { MAIN_WAL, CHECKPOINT_WAL, RETAINED_WAL };
+enum class WALReplayState { MAIN_WAL, CHECKPOINT_WAL, RETAINED_WAL, LIVE_TAIL };
 
 class ReplayState {
 public:
@@ -78,6 +78,14 @@ public:
 	optional_idx current_table_oid;
 	optional_ptr<TableLogStorage> current_log_table;
 	optional_ptr<TableStorageLoad> table_storage;
+	//! Set instead of table_storage when the read is not driven by the boot registry.
+	optional_ptr<TableLogStorageResolver> log_resolver;
+
+	//! Whether entries naming a table this replay has no consumer for are passed over rather than
+	//! being a corrupt-WAL error.
+	bool SkipsUnknownTable() const {
+		return table_storage || log_resolver;
+	}
 	optional<hugeint_t> prepared_txid;
 	vector<pair<hugeint_t, vector<pair<idx_t, idx_t>>>> committed_prepared;
 	MetaBlockPointer checkpoint_id;
@@ -266,7 +274,8 @@ public:
 			deserializer.End();
 			return true;
 		}
-		if (state.replay_state == WALReplayState::RETAINED_WAL && !ReplaysRetained(wal_type)) {
+		if ((state.replay_state == WALReplayState::RETAINED_WAL || state.replay_state == WALReplayState::LIVE_TAIL) &&
+		    !ReplaysRetained(wal_type)) {
 			deserialize_only = true;
 		}
 		if (CanSkipPayload(wal_type)) {
@@ -1135,6 +1144,15 @@ void WriteAheadLogDeserializer::ReplayVersion() {
 	state.wal_generation = wal_checkpoint_iteration;
 	if (state.replay_state == WALReplayState::RETAINED_WAL) {
 		if (wal_checkpoint_iteration >= expected_checkpoint_iteration) {
+			ThrowVersionError(wal_checkpoint_iteration, expected_checkpoint_iteration);
+		}
+		return;
+	}
+	if (state.replay_state == WALReplayState::LIVE_TAIL) {
+		// a tail can start in a retained generation and run into the live one, so any log at or
+		// below the file's iteration is in range; a checkpoint in flight writes into a WAL of the
+		// next iteration and only writes the header at its end, so one above it is in range too
+		if (wal_checkpoint_iteration > expected_checkpoint_iteration + 1) {
 			ThrowVersionError(wal_checkpoint_iteration, expected_checkpoint_iteration);
 		}
 		return;
@@ -2023,6 +2041,12 @@ void WriteAheadLogDeserializer::ReplayUseTable() {
 	if (DeserializeOnly()) {
 		return;
 	}
+	if (state.log_resolver) {
+		state.current_table_oid = entry.table_oid;
+		state.current_table = nullptr;
+		state.current_log_table = state.log_resolver->Resolve(entry.table_oid);
+		return;
+	}
 	if (state.table_storage) {
 		state.current_table_oid = entry.table_oid;
 		state.current_table = nullptr;
@@ -2048,7 +2072,7 @@ void WriteAheadLogDeserializer::ReplayInsert() {
 		state.current_log_table->ReplayInsert(context, chunk);
 		return;
 	}
-	if (!state.current_table && state.table_storage) {
+	if (!state.current_table && state.SkipsUnknownTable()) {
 		return;
 	}
 	if (!state.current_table) {
@@ -2076,7 +2100,7 @@ void WriteAheadLogDeserializer::ReplayRowGroupData() {
 		}
 		return;
 	}
-	if (!state.current_table && state.table_storage) {
+	if (!state.current_table && state.SkipsUnknownTable()) {
 		return;
 	}
 	if (!state.current_table) {
@@ -2119,7 +2143,7 @@ void WriteAheadLogDeserializer::ReplayDelete() {
 	if (DeserializeOnly()) {
 		return;
 	}
-	if (!state.current_table && state.table_storage) {
+	if (!state.current_table && state.SkipsUnknownTable()) {
 		return;
 	}
 	if (!state.current_table) {
@@ -2149,7 +2173,7 @@ void WriteAheadLogDeserializer::ReplayUpdate() {
 	DataChunk chunk;
 	deserializer.ReadObject(102, "chunk", [&](Deserializer &object) { chunk.Deserialize(object); });
 
-	if (DeserializeOnly() || (!state.current_table && state.table_storage)) {
+	if (DeserializeOnly() || (!state.current_table && state.SkipsUnknownTable())) {
 		return;
 	}
 	if (!state.current_table) {
@@ -2250,6 +2274,66 @@ void WriteAheadLogDeserializer::ReplayCheckpoint() {
 	auto entry = WALCheckpoint::Deserialize(deserializer);
 	state.checkpoint_id = entry.meta_block;
 	state.checkpoint_position = state.current_position;
+}
+
+WALTailRead ReadWALTail(AttachedDatabase &db, ClientContext &context, unique_ptr<FileHandle> handle, idx_t start_offset,
+                        idx_t end_offset, TableLogStorageResolver &resolver) {
+	WALTailRead result;
+	result.boundary = start_offset;
+	auto &fs = FileSystem::Get(db);
+	auto &db_manager = DatabaseManager::Get(db.GetDatabase());
+	try {
+		BufferedFileReader reader(fs, std::move(handle));
+		ReplayState state(db, context, WALReplayState::LIVE_TAIL);
+
+		// The leading entry carries the version, which frames every entry after it, so the read
+		// starts at the head of the file however far into it the range begins.
+		if (!reader.Finished()) {
+			auto header = WriteAheadLogDeserializer::GetEntryDeserializer(state, reader, true);
+			header.ReplayEntry();
+			result.entries++;
+		}
+		result.wal_version = state.wal_version;
+		if (start_offset > reader.FileSize()) {
+			// Seek asserts on a location past the end, so an offset that does not belong to this
+			// file would abort a debug build rather than come back as an error.
+			throw SerializationException("WAL tail starts at byte %llu, past the end of the %llu byte file at %s",
+			                             start_offset, reader.FileSize(), reader.handle->GetPath());
+		}
+		if (start_offset > reader.CurrentOffset()) {
+			reader.Seek(start_offset);
+		}
+
+		state.log_resolver = &resolver;
+		result.boundary = reader.CurrentOffset();
+		while (reader.CurrentOffset() < end_offset) {
+			auto deserializer = WriteAheadLogDeserializer::GetEntryDeserializer(state, reader, false);
+			result.entries++;
+			if (!deserializer.ReplayEntry()) {
+				continue;
+			}
+			bool committed = true;
+			if (state.prepared_txid) {
+				committed = db_manager.IsPreparedCommitted(*state.prepared_txid);
+				state.prepared_txid.reset();
+			}
+			resolver.EndBatch(committed);
+			if (!committed) {
+				// Its transaction either rolled back or has not decided; a later read resumes at
+				// this batch, by when the commit lock has settled it.
+				result.stopped_undecided = true;
+				return result;
+			}
+			result.committed_batches++;
+			result.boundary = reader.CurrentOffset();
+		}
+	} catch (std::exception &ex) {
+		result.error = ErrorData(ex).RawMessage();
+	}
+	// A batch left open by a torn tail, the bound or an error keeps whatever it staged out of the
+	// result, and the boundary stays at its start.
+	resolver.EndBatch(false);
+	return result;
 }
 
 } // namespace duckdb

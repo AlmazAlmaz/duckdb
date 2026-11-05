@@ -114,6 +114,9 @@ public:
 	//! The path to the WAL that is used while recovering from a crash involving the checkpoint WAL
 	string GetRecoveryWALPath();
 	string GetRetainedWALPath(idx_t generation);
+	//! The file a WAL generation is in right now: the live WAL for the current generation, the main WAL for the one a
+	//! running checkpoint has closed but not yet renamed, and a retained file for anything older
+	string GetWALGenerationPath(idx_t generation);
 	void SetRetainedWALStart(optional_idx generation);
 	idx_t GetOldestWALGeneration() const {
 		return oldest_wal_generation;

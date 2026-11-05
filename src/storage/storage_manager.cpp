@@ -409,6 +409,22 @@ string StorageManager::GetRetainedWALPath(idx_t generation) {
 	return GetWALPath(".wal.retained." + to_string(generation));
 }
 
+string StorageManager::GetWALGenerationPath(idx_t generation) {
+	if (!wal) {
+		return GetRetainedWALPath(generation);
+	}
+	auto live = wal->GetCheckpointIteration();
+	if (generation == live) {
+		return wal->GetPath();
+	}
+	// a checkpoint writes into a WAL of the next generation and only renames the one it closed when it finishes, so
+	// until then the generation it retired is still at the main path and has no retained name
+	if (generation + 1 == live && wal->GetPath() != wal_path) {
+		return wal_path;
+	}
+	return GetRetainedWALPath(generation);
+}
+
 bool StorageManager::InMemory() const {
 	D_ASSERT(!path.empty());
 	return path == IN_MEMORY_PATH;
