@@ -10,6 +10,7 @@
 
 #include "duckdb/common/enums/prepared_statement_mode.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/main/valid_checker.hpp"
 #include "duckdb/planner/expression/bound_parameter_data.hpp"
@@ -60,7 +61,11 @@ public:
 	}
 	virtual void TransactionDurable(AttachedDatabase &db, ClientContext &context) {
 	}
-	virtual void TransactionPreWalWrite(AttachedDatabase &db, ClientContext &context) {
+	//! `commit_lock` is the held commit lock, or null where this fires without it: the prepared path takes it only
+	//! for a transaction the catalog does not own. A hook that reads the WAL needs the difference, because that lock
+	//! is what fixes which file a WAL path names, and it is not recursive.
+	virtual void TransactionPreWalWrite(AttachedDatabase &db, ClientContext &context,
+	                                    optional_ptr<unique_lock<mutex>> commit_lock) {
 	}
 	virtual void TransactionPreRollback(MetaTransaction &transaction, ClientContext &context,
 	                                    optional_ptr<ErrorData> error) {
