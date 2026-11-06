@@ -100,6 +100,9 @@ void AlterInfo::Serialize(Serializer &serializer) const {
 	if (serializer.ShouldSerialize(StorageVersion::SERENEDB_V1)) {
 		serializer.WritePropertyWithDefault<idx_t>(16484, "oid", oid);
 	}
+	if (serializer.ShouldSerialize(StorageVersion::SERENEDB_V1)) {
+		serializer.WritePropertyWithDefault<unique_ptr<LogicalDependencyList>>(16591, "new_dependencies", new_dependencies);
+	}
 }
 
 unique_ptr<ParseInfo> AlterInfo::Deserialize(Deserializer &deserializer) {
@@ -111,6 +114,7 @@ unique_ptr<ParseInfo> AlterInfo::Deserialize(Deserializer &deserializer) {
 	auto allow_internal = deserializer.ReadPropertyWithDefault<bool>(205, "allow_internal");
 	auto qualified_name = deserializer.ReadPropertyWithExplicitDefault<QualifiedName>(206, "qualified_name", QualifiedName());
 	auto oid = deserializer.ReadPropertyWithDefault<idx_t>(16484, "oid");
+	auto new_dependencies = deserializer.ReadPropertyWithDefault<unique_ptr<LogicalDependencyList>>(16591, "new_dependencies");
 	unique_ptr<AlterInfo> result;
 	switch (type) {
 	case AlterType::ALTER_DATABASE:
@@ -167,6 +171,9 @@ unique_ptr<ParseInfo> AlterInfo::Deserialize(Deserializer &deserializer) {
 	result->SetQualifiedName(std::move(catalog), std::move(schema), std::move(name));
 	if (!qualified_name.Path().empty()) {
 		result->SetQualifiedName(std::move(qualified_name));
+	}
+	if (new_dependencies) {
+		result->new_dependencies = std::move(new_dependencies);
 	}
 	return std::move(result);
 }
