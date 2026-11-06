@@ -4,6 +4,7 @@
 #include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/execution/index/art/art.hpp"
 #include "duckdb/function/table/table_scan.hpp"
+#include "duckdb/parser/constraints/check_constraint.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
@@ -118,6 +119,37 @@ static void BindAlterTypes(Binder &binder, AlterStatement &stmt) {
 		if (job_info.alter_job_type == AlterJobType::SET_SCHEDULE) {
 			binder.BindJobSchedule(job_info.schedule, job_info.parsed_schedule);
 		}
+	}
+}
+
+static void QualifyAlterUserFunctions(Binder &binder, const SchemaCatalogEntry &schema, AlterStatement &stmt) {
+	if (stmt.info->type != AlterType::ALTER_TABLE) {
+		return;
+	}
+	auto &table_info = stmt.info->Cast<AlterTableInfo>();
+	switch (table_info.alter_table_type) {
+	case AlterTableType::ADD_COLUMN:
+		binder.QualifyUserFunctions(schema, table_info.Cast<AddColumnInfo>().new_column);
+		break;
+	case AlterTableType::SET_DEFAULT: {
+		auto &expression = table_info.Cast<SetDefaultInfo>().expression;
+		if (expression) {
+			binder.QualifyUserFunctions(schema, *expression);
+		}
+		break;
+	}
+	case AlterTableType::ADD_CONSTRAINT: {
+		auto &constraint = *table_info.Cast<AddConstraintInfo>().constraint;
+		if (constraint.type == ConstraintType::CHECK) {
+			binder.QualifyUserFunctions(schema, *constraint.Cast<CheckConstraint>().expression);
+		}
+		break;
+	}
+	case AlterTableType::ALTER_COLUMN_TYPE:
+		binder.QualifyUserFunctions(schema, *table_info.Cast<ChangeColumnTypeInfo>().expression);
+		break;
+	default:
+		break;
 	}
 }
 
@@ -294,6 +326,9 @@ BoundStatement Binder::Bind(AlterStatement &stmt) {
 	type_binder->SetSearchPath(catalog, stmt.info->GetQualifiedName().Schema());
 
 	BindAlterTypes(*type_binder, stmt);
+	if (catalog.Compatibility() == SqlCompatibility::POSTGRES) {
+		QualifyAlterUserFunctions(*type_binder, entry->ParentSchema(context), stmt);
+	}
 
 	if (catalog.IsSystemCatalog()) {
 		throw BinderException("Can not comment on System Catalog entries");

@@ -9,6 +9,7 @@
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 #include "duckdb/catalog/catalog_entry/type_catalog_entry.hpp"
 #include "duckdb/catalog/dependency_manager.hpp"
+#include "duckdb/catalog/standard_entry.hpp"
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/common/string.hpp"
@@ -102,6 +103,61 @@ vector<unique_ptr<BoundConstraint>> Binder::BindConstraints(const vector<unique_
 		bound_constraints.push_back(BindConstraint(*constr, table_name, columns));
 	}
 	return bound_constraints;
+}
+
+static void QualifyUserFunctions(CatalogEntryRetriever &retriever, const Catalog &home, optional_idx home_schema,
+                                 ParsedExpression &expression) {
+	if (expression.GetExpressionClass() == ExpressionClass::FUNCTION) {
+		auto &function = expression.Cast<FunctionExpression>();
+		if (function.GetQualifiedName().Schema().empty()) {
+			optional_ptr<CatalogEntry> entry;
+			for (const auto type : {CatalogType::SCALAR_FUNCTION_ENTRY, CatalogType::MACRO_ENTRY}) {
+				entry = retriever.GetEntry(EntryLookupInfo(type, function.GetQualifiedName()),
+				                           OnEntryNotFound::RETURN_NULL);
+				if (entry) {
+					break;
+				}
+			}
+			if (entry && !entry->internal && !entry->ParentCatalog().IsSystemCatalog() &&
+			    !entry->ParentCatalog().IsTemporaryCatalog() &&
+			    (!home_schema.IsValid() || entry->ParentSchemaOid() != home_schema.GetIndex())) {
+				auto qualified = entry->Cast<StandardEntry>().GetQualifiedName(entry->name);
+				if (&entry->ParentCatalog() == &home) {
+					qualified.StripCatalog();
+				}
+				function.SetQualifiedName(std::move(qualified));
+			}
+		}
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    expression, [&](ParsedExpression &child) { QualifyUserFunctions(retriever, home, home_schema, child); });
+}
+
+void Binder::QualifyUserFunctions(const Catalog &home, ParsedExpression &expression) {
+	duckdb::QualifyUserFunctions(entry_retriever, home, optional_idx(), expression);
+}
+
+void Binder::QualifyUserFunctions(const SchemaCatalogEntry &home, ParsedExpression &expression) {
+	duckdb::QualifyUserFunctions(entry_retriever, home.ParentCatalog(), home.oid, expression);
+}
+
+void Binder::QualifyUserFunctions(const SchemaCatalogEntry &home, ColumnDefinition &column) {
+	if (column.Generated()) {
+		QualifyUserFunctions(home, column.GeneratedExpressionMutable());
+	} else if (column.HasDefaultValue()) {
+		QualifyUserFunctions(home, column.DefaultValueMutable());
+	}
+}
+
+void Binder::QualifyUserFunctions(const SchemaCatalogEntry &home, CreateTableInfo &info) {
+	for (idx_t i = 0; i < info.columns.LogicalColumnCount(); i++) {
+		QualifyUserFunctions(home, info.columns.GetColumnMutable(LogicalIndex(i)));
+	}
+	for (auto &constraint : info.constraints) {
+		if (constraint->type == ConstraintType::CHECK) {
+			QualifyUserFunctions(home, *constraint->Cast<CheckConstraint>().expression);
+		}
+	}
 }
 
 void BoundCreateTableInfo::AddSubDependency(AlterTableType alter, const Identifier &name) {
@@ -300,6 +356,7 @@ void Binder::BindGeneratedColumns(BoundCreateTableInfo &info) {
 
 	// Create a new binder because we dont need (or want) these bindings in this scope
 	auto binder = Binder::CreateBinder(context);
+	binder->SetSearchPath(info.schema.ParentCatalog(), info.schema.name);
 	binder->SetCatalogLookupCallback(entry_retriever.GetCallback());
 	binder->bind_context.AddGenericBinding(table_index, base.GetTableName(), names, types,
 	                                       base.columns.IsCaseSensitive());

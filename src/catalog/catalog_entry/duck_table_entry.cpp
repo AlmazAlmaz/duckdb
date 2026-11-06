@@ -855,7 +855,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::RemoveColumn(ClientContext &context, Re
 	}
 
 	auto binder = Binder::CreateBinder(context);
-	auto bound_constraints = binder->BindConstraints(constraints, name, columns);
+	auto bound_constraints = binder->BindConstraints(*this);
 
 	UpdateConstraintsOnColumnDrop(removed_index, adjusted_indices, info, *create_info, bound_constraints,
 	                              dropped_column_is_generated);
@@ -1297,6 +1297,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::ChangeColumnType(ClientContext &context
 
 	// Bind the USING expression.
 	auto binder = Binder::CreateBinder(context);
+	binder->SetSearchPath(catalog, schema.name);
 	vector<LogicalIndex> bound_columns;
 	AlterBinder expr_binder(*binder, context, *this, bound_columns, info.target_type);
 	auto expression = info.expression->Copy();
@@ -1554,6 +1555,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::AddConstraint(ClientContext &context, A
 
 	// We create a physical table with a new constraint and a new unique index.
 	const auto binder = Binder::CreateBinder(context);
+	binder->SetSearchPath(catalog, schema.name);
 	const auto bound_constraint =
 	    binder->BindConstraint(*info.constraint, table_info.GetTableName(), table_info.columns);
 	const auto bound_create_info = binder->BindCreateTableInfo(std::move(create_info), schema, info.bind_mode);

@@ -18,6 +18,7 @@
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/parser/column_definition.hpp"
+#include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/tableref/match_recognize_ref.hpp"
 #include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/parser/qualified_name_set.hpp"
@@ -353,6 +354,10 @@ public:
 	                                                    const Identifier &table_name, const ColumnList &columns);
 	vector<unique_ptr<BoundConstraint>> BindConstraints(const TableCatalogEntry &table);
 	vector<unique_ptr<BoundConstraint>> BindNewConstraints(BoundCreateTableInfo &info);
+	void QualifyUserFunctions(const Catalog &home, ParsedExpression &expression);
+	void QualifyUserFunctions(const SchemaCatalogEntry &home, ParsedExpression &expression);
+	void QualifyUserFunctions(const SchemaCatalogEntry &home, ColumnDefinition &column);
+	void QualifyUserFunctions(const SchemaCatalogEntry &home, CreateTableInfo &info);
 	unique_ptr<BoundConstraint> BindConstraint(const Constraint &constraint, const Identifier &table,
 	                                           const ColumnList &columns);
 	unique_ptr<BoundConstraint> BindUniqueConstraint(const Constraint &constraint, const Identifier &table,
