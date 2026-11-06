@@ -967,8 +967,10 @@ unique_ptr<BoundCreateTableInfo> Binder::BindCreateTableInfo(unique_ptr<CreateIn
 		auto &config = DBConfig::Get(catalog.GetAttached());
 		VerifyCompressionType(context, storage_manager, config, *result);
 		CreateColumnDependencyManager(*result);
-		// bind the generated column expressions
-		BindGeneratedColumns(*result);
+		if (bind_mode != AlterBindMode::SKIP_BINDING) {
+			// bind the generated column expressions
+			BindGeneratedColumns(*result);
+		}
 		// bind any constraints
 		if (catalog.Compatibility() == SqlCompatibility::POSTGRES) {
 			NameConstraints(base);
