@@ -110,22 +110,20 @@ static void QualifyUserFunctions(CatalogEntryRetriever &retriever, const Catalog
 	if (expression.GetExpressionClass() == ExpressionClass::FUNCTION) {
 		auto &function = expression.Cast<FunctionExpression>();
 		if (function.GetQualifiedName().Schema().empty()) {
-			optional_ptr<CatalogEntry> entry;
-			for (const auto type : {CatalogType::SCALAR_FUNCTION_ENTRY, CatalogType::MACRO_ENTRY}) {
-				entry = retriever.GetEntry(EntryLookupInfo(type, function.GetQualifiedName()),
-				                           OnEntryNotFound::RETURN_NULL);
-				if (entry) {
-					break;
+			auto entry =
+			    retriever.GetEntry(EntryLookupInfo(CatalogType::SCALAR_FUNCTION_ENTRY, function.GetQualifiedName()),
+			                       OnEntryNotFound::RETURN_NULL);
+			if (entry && !entry->internal) {
+				if (entry->ParentCatalog().IsTemporaryCatalog()) {
+					throw BinderException("Cannot use temporary function %s in a non-temporary relation", entry->name);
 				}
-			}
-			if (entry && !entry->internal && !entry->ParentCatalog().IsSystemCatalog() &&
-			    !entry->ParentCatalog().IsTemporaryCatalog() &&
-			    (!home_schema.IsValid() || entry->ParentSchemaOid() != home_schema.GetIndex())) {
-				auto qualified = entry->Cast<StandardEntry>().GetQualifiedName(entry->name);
-				if (&entry->ParentCatalog() == &home) {
-					qualified.StripCatalog();
+				if (!home_schema.IsValid() || entry->ParentSchemaOid() != home_schema.GetIndex()) {
+					auto qualified = entry->Cast<StandardEntry>().GetQualifiedName(entry->name);
+					if (&entry->ParentCatalog() == &home) {
+						qualified.StripCatalog();
+					}
+					function.SetQualifiedName(std::move(qualified));
 				}
-				function.SetQualifiedName(std::move(qualified));
 			}
 		}
 	}
