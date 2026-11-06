@@ -298,7 +298,11 @@ private:
 		auto is_present = self.OnNullableBegin();
 		if (is_present) {
 			self.OnObjectBegin();
-			ptr = ELEMENT_TYPE::Deserialize(self);
+			if constexpr (std::is_same<decltype(ELEMENT_TYPE::Deserialize(self)), ELEMENT_TYPE>::value) {
+				ptr = make_uniq<ELEMENT_TYPE>(ELEMENT_TYPE::Deserialize(self));
+			} else {
+				ptr = ELEMENT_TYPE::Deserialize(self);
+			}
 			self.OnObjectEnd();
 		}
 		self.OnNullableEnd();

@@ -9,6 +9,7 @@
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_set.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
+#include "duckdb/common/fault_points.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
@@ -145,6 +146,9 @@ void WALWriteState::WriteCatalogEntry(CatalogEntry &entry, idx_t change, data_pt
 		parse_info = deserializer.ReadProperty<unique_ptr<ParseInfo>>(101, "alter_info");
 		deserializer.End();
 		parse_info->Cast<AlterInfo>().oid = parent.oid;
+		SDB_IF_FAILURE("alter_log_without_dependencies") {
+			parse_info->Cast<AlterInfo>().new_dependencies.reset();
+		}
 	}
 	auto alter_info = parse_info ? &parse_info->Cast<AlterInfo>() : nullptr;
 	const bool moved_with_owner =
