@@ -105,10 +105,10 @@ public:
 	//! Creates a sequence with the given name in the schema
 	virtual optional_ptr<CatalogEntry> CreateSequence(CatalogTransaction transaction, CreateSequenceInfo &info) = 0;
 	virtual optional_ptr<CatalogEntry> CreateJob(CatalogTransaction transaction, CreateJobInfo &info) {
-		throw NotImplementedException("Jobs are not supported in schema '%s'", name);
+		throw NotImplementedException("Jobs are not supported in schema %s", name);
 	}
 	virtual optional_ptr<CatalogEntry> CreateTokenizer(CatalogTransaction transaction, CreateTokenizerInfo &info) {
-		throw NotImplementedException("Text search dictionaries are not supported in schema '%s'", name);
+		throw NotImplementedException("Text search dictionaries are not supported in schema %s", name);
 	}
 	//! Create a table function within the given schema
 	virtual optional_ptr<CatalogEntry> CreateTableFunction(CatalogTransaction transaction,
