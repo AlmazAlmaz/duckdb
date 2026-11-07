@@ -465,7 +465,7 @@ void Binder::MergeMacroOverloads(CreateInfo &info) {
 	}
 	EntryLookupInfo lookup(info.type, info.GetQualifiedName());
 	auto existing = Catalog::GetEntry(context, lookup, OnEntryNotFound::RETURN_NULL);
-	if (!existing) {
+	if (!existing || existing->type != info.type) {
 		return;
 	}
 	auto &macro_info = info.Cast<CreateMacroInfo>();
