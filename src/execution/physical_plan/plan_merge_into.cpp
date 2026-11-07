@@ -225,16 +225,20 @@ static unique_ptr<MergeIntoOperator> PlanGenericMergeIntoAction(ClientContext &c
 		break;
 	}
 	case MergeActionType::MERGE_DELETE: {
-		if (op.return_chunk) {
-			throw NotImplementedException("RETURNING clause not yet supported for MERGE INTO with DELETE for database "
-			                              "type \"%s\"",
-			                              catalog.GetCatalogType());
-		}
 		// a regular DELETE reads the row ids out of its child plan - reference them within the rows of the action
 		auto &action_input = PlanMergeActionSource(planner, plan, condition, *result);
 
 		LogicalDelete delete_op(op.table, TableIndex(0));
 		delete_op.expressions = PlanMergeRowIdReferences(op, plan);
+		delete_op.return_chunk = op.return_chunk;
+		for (auto column : op.delete_return_columns) {
+			if (column == DConstants::INVALID_INDEX) {
+				delete_op.return_columns.push_back(column);
+				continue;
+			}
+			delete_op.return_columns.push_back(delete_op.expressions.size());
+			delete_op.expressions.push_back(make_uniq<BoundReferenceExpression>(plan.types[column], column));
+		}
 		delete_op.bound_constraints = CopyBoundConstraints(op);
 		delete_op.estimated_cardinality = cardinality;
 		delete_op.ResolveOperatorTypes();
