@@ -843,6 +843,40 @@ static void BindSerialSequences(ClientContext &context, SchemaCatalogEntry &sche
 	}
 }
 
+static bool NamesUserType(const LogicalType &type, idx_t oid) {
+	if (type.HasExtensionInfo()) {
+		auto &properties = type.GetExtensionInfo()->properties;
+		auto entry = properties.find(ExtensionTypeInfo::CATALOG_OID_PROPERTY);
+		if (entry != properties.end()) {
+			return entry->second.GetValue<idx_t>() == oid;
+		}
+	}
+	switch (type.id()) {
+	case LogicalTypeId::STRUCT:
+		for (auto &child : StructType::GetChildTypes(type)) {
+			if (NamesUserType(child.second, oid)) {
+				return true;
+			}
+		}
+		return false;
+	case LogicalTypeId::UNION:
+		for (idx_t i = 0; i < UnionType::GetMemberCount(type); i++) {
+			if (NamesUserType(UnionType::GetMemberType(type, i), oid)) {
+				return true;
+			}
+		}
+		return false;
+	case LogicalTypeId::LIST:
+		return NamesUserType(ListType::GetChildType(type), oid);
+	case LogicalTypeId::ARRAY:
+		return NamesUserType(ArrayType::GetChildType(type), oid);
+	case LogicalTypeId::MAP:
+		return NamesUserType(MapType::KeyType(type), oid) || NamesUserType(MapType::ValueType(type), oid);
+	default:
+		return false;
+	}
+}
+
 static bool NamesPendingSerialSequence(BoundCreateTableInfo &info, const Identifier &column) {
 	IdentifierEquality equals(info.Base().columns.IsCaseSensitive());
 	for (auto &serial : info.serial_sequences) {
@@ -942,12 +976,11 @@ unique_ptr<BoundCreateTableInfo> Binder::BindCreateTableInfo(unique_ptr<CreateIn
 			auto &column = base.columns.GetColumnMutable(PhysicalIndex(i));
 			result->AddSubDependency(AlterTableType::REMOVE_COLUMN, column.Name());
 			type_binder->BindLogicalType(column.TypeMutable());
-			if (!column_types_are_dependencies || !column.Type().HasAlias()) {
+			if (!column_types_are_dependencies) {
 				continue;
 			}
 			for (auto &previous : previous_dependencies.Set()) {
-				if (previous.entry.type != CatalogType::TYPE_ENTRY ||
-				    previous.entry.name != Identifier(column.Type().GetAlias())) {
+				if (previous.entry.type != CatalogType::TYPE_ENTRY || !NamesUserType(column.Type(), previous.oid)) {
 					continue;
 				}
 				auto current = previous;
@@ -957,10 +990,7 @@ unique_ptr<BoundCreateTableInfo> Binder::BindCreateTableInfo(unique_ptr<CreateIn
 				EntryLookupInfo lookup(
 				    CatalogType::TYPE_ENTRY,
 				    QualifiedName::FromCatalogSchema(current.catalog, current.entry.schema_path, current.entry.name));
-				auto entry = type_binder->EntryRetriever().GetEntry(lookup, OnEntryNotFound::RETURN_NULL);
-				if (entry && entry->Cast<TypeCatalogEntry>().user_type == column.Type()) {
-					break;
-				}
+				type_binder->EntryRetriever().GetEntry(lookup, OnEntryNotFound::RETURN_NULL);
 			}
 		}
 
