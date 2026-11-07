@@ -121,6 +121,10 @@ SourceResultType PhysicalDrop::GetDataInternal(ExecutionContext &context, DataCh
 		auto &base_table_ref = trigger_extra.base_table->Cast<BaseTableRef>();
 		auto &table_entry = Catalog::GetEntry<TableCatalogEntry>(context.client, base_table_ref.GetQualifiedName());
 		auto transaction = table_entry.ParentCatalog().GetCatalogTransaction(context.client);
+		if (info->if_not_found != OnEntryNotFound::THROW_EXCEPTION &&
+		    !table_entry.GetTrigger(transaction, info->GetQualifiedName().Name())) {
+			break;
+		}
 		if (!table_entry.DropTrigger(transaction, info->GetQualifiedName().Name(), info->cascade)) {
 			if (info->if_not_found == OnEntryNotFound::THROW_EXCEPTION) {
 				throw CatalogException("Trigger with name %s does not exist on table %s",
