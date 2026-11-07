@@ -60,6 +60,8 @@ public:
 	static void ExtractEntries(ClientContext &context, vector<reference<SchemaCatalogEntry>> &schemas,
 	                           ExportEntries &result);
 	static catalog_entry_vector_t GetNaiveExportOrder(ClientContext &context, Catalog &catalog);
+	static bool QualifyUserTypes(LogicalType &type, const unordered_map<idx_t, QualifiedName> &user_types,
+	                             bool nested_only = false);
 
 public:
 	// Sink interface

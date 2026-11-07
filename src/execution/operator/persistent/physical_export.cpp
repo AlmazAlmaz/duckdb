@@ -80,8 +80,8 @@ static void WriteComments(stringstream &ss, CatalogEntry &entry) {
 	}
 }
 
-static bool QualifyUserTypes(LogicalType &type, const unordered_map<idx_t, QualifiedName> &user_types,
-                             bool nested_only = false) {
+bool PhysicalExport::QualifyUserTypes(LogicalType &type, const unordered_map<idx_t, QualifiedName> &user_types,
+                                      bool nested_only) {
 	if (!nested_only && type.HasExtensionInfo()) {
 		auto &properties = type.GetExtensionInfo()->properties;
 		auto oid = properties.find(ExtensionTypeInfo::CATALOG_OID_PROPERTY);
@@ -252,20 +252,20 @@ static void WriteCatalogEntries(stringstream &ss, Catalog &catalog, CatalogTrans
 			for (idx_t i = 0; i < columns.LogicalColumnCount(); i++) {
 				auto &column = columns.GetColumnMutable(LogicalIndex(i));
 				auto type = column.Type();
-				if (QualifyUserTypes(type, user_types)) {
+				if (PhysicalExport::QualifyUserTypes(type, user_types)) {
 					column.SetType(type);
 				}
 			}
 		} else if (create_info->type == CatalogType::TYPE_ENTRY) {
-			QualifyUserTypes(create_info->Cast<CreateTypeInfo>().type, user_types, true);
+			PhysicalExport::QualifyUserTypes(create_info->Cast<CreateTypeInfo>().type, user_types, true);
 		} else if (create_info->type == CatalogType::MACRO_ENTRY ||
 		           create_info->type == CatalogType::TABLE_MACRO_ENTRY) {
 			for (auto &macro : create_info->Cast<CreateMacroInfo>().macros) {
 				for (auto &type : macro->types) {
-					QualifyUserTypes(type, user_types);
+					PhysicalExport::QualifyUserTypes(type, user_types);
 				}
 				for (auto &type : macro->return_types) {
-					QualifyUserTypes(type, user_types);
+					PhysicalExport::QualifyUserTypes(type, user_types);
 				}
 			}
 		}
