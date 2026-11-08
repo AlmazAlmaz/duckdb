@@ -29,6 +29,7 @@ struct CreateTriggerInfo;
 struct StructFieldRemap {
 	LogicalType new_type;
 	unique_ptr<ParsedExpression> remap_expression;
+	ErrorData error;
 };
 
 //! Build the (new_type, remap_struct(...)) pair for ADD FIELD on column_path.

@@ -1016,8 +1016,10 @@ DroppedFieldMapping RenameFieldFromStruct(const LogicalType &type, const vector<
 StructFieldRemap BuildAddFieldRemap(const LogicalType &column_type, const Identifier &column_name,
                                     const vector<Identifier> &column_path, const ColumnDefinition &new_field) {
 	auto res = AddFieldToStruct(column_type, column_path, new_field);
+	StructFieldRemap result;
 	if (res.error.HasError()) {
-		res.error.Throw();
+		result.error = std::move(res.error);
+		return result;
 	}
 	vector<unique_ptr<ParsedExpression>> children;
 	children.push_back(make_uniq<ColumnRefExpression>(column_path[0]));
@@ -1025,7 +1027,6 @@ StructFieldRemap BuildAddFieldRemap(const LogicalType &column_type, const Identi
 	children.push_back(ConstantExpression::FromValue(ConstructMapping(column_name, column_type)));
 	D_ASSERT(res.default_value);
 	children.push_back(std::move(res.default_value));
-	StructFieldRemap result;
 	result.new_type = std::move(res.new_type);
 	result.remap_expression = make_uniq<FunctionExpression>("remap_struct", std::move(children));
 	return result;
@@ -1033,15 +1034,16 @@ StructFieldRemap BuildAddFieldRemap(const LogicalType &column_type, const Identi
 
 StructFieldRemap BuildRemoveFieldRemap(const LogicalType &column_type, const vector<Identifier> &column_path) {
 	auto res = DropFieldFromStruct(column_type, column_path, 1);
+	StructFieldRemap result;
 	if (res.error.HasError()) {
-		res.error.Throw();
+		result.error = std::move(res.error);
+		return result;
 	}
 	vector<unique_ptr<ParsedExpression>> children;
 	children.push_back(make_uniq<ColumnRefExpression>(column_path[0]));
 	children.push_back(ConstantExpression::FromValue(Value(res.new_type)));
 	children.push_back(ConstantExpression::FromValue(res.mapping));
 	children.push_back(ConstantExpression::Null());
-	StructFieldRemap result;
 	result.new_type = std::move(res.new_type);
 	result.remap_expression = make_uniq<FunctionExpression>("remap_struct", std::move(children));
 	return result;
@@ -1050,15 +1052,16 @@ StructFieldRemap BuildRemoveFieldRemap(const LogicalType &column_type, const vec
 StructFieldRemap BuildRenameFieldRemap(const LogicalType &column_type, const vector<Identifier> &column_path,
                                        const string &new_name) {
 	auto res = RenameFieldFromStruct(column_type, column_path, new_name, 1);
+	StructFieldRemap result;
 	if (res.error.HasError()) {
-		res.error.Throw();
+		result.error = std::move(res.error);
+		return result;
 	}
 	vector<unique_ptr<ParsedExpression>> children;
 	children.push_back(make_uniq<ColumnRefExpression>(column_path[0]));
 	children.push_back(ConstantExpression::FromValue(Value(res.new_type)));
 	children.push_back(ConstantExpression::FromValue(res.mapping));
 	children.push_back(ConstantExpression::Null());
-	StructFieldRemap result;
 	result.new_type = std::move(res.new_type);
 	result.remap_expression = make_uniq<FunctionExpression>("remap_struct", std::move(children));
 	return result;
