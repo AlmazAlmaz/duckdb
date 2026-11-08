@@ -75,6 +75,9 @@ void LogicalDependencyList::AddDependency(CatalogEntry &entry) {
 }
 
 void LogicalDependencyList::AddDependency(CatalogEntry &entry, DependencyDependentFlags flags) {
+	if (entry.internal) {
+		return;
+	}
 	LogicalDependency dependency(entry);
 	dependency.flags = std::move(flags);
 	AddDependency(dependency);
