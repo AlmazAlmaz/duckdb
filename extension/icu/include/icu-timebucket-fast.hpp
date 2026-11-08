@@ -389,8 +389,10 @@ struct ICUTimeBucketFast {
 		if (!added_micros(result_days, bucket)) {
 			return false;
 		}
-		if (ts < bucket) {
-			return TryCalendarAddDays(lut, bucket, -width, bucket);
+		while (ts < bucket) {
+			if (!TryCalendarAddDays(lut, bucket, -width, bucket)) {
+				return false;
+			}
 		}
 		return true;
 	}
