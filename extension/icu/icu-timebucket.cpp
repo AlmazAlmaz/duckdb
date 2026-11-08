@@ -89,10 +89,8 @@ struct ICUTimeBucket : public ICUDateFunc {
 			throw OutOfRangeException("Timestamp out of range");
 		}
 		auto bucket = Add(calendar, origin, interval_t {0, static_cast<int32_t>(result_days), 0});
-		if (ts < bucket) {
-			D_ASSERT(ts < origin);
+		while (ts < bucket) {
 			bucket = Add(calendar, bucket, interval_t {0, -bucket_width_days, 0});
-			D_ASSERT(ts > bucket);
 		}
 
 		return bucket;
