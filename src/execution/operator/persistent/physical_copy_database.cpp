@@ -61,39 +61,10 @@ SourceResultType PhysicalCopyDatabase::GetDataInternal(ExecutionContext &context
 			catalog.CreateTable(context.client, *bound_info);
 			break;
 		}
-		case CatalogType::INDEX_ENTRY: {
-			// Skip for now.
-			break;
-		}
 		default:
 			throw NotImplementedException("Entry type %s not supported in PhysicalCopyDatabase",
 			                              CatalogTypeToString(create_info->type));
 		}
-	}
-
-	// Create the indexes after table creation.
-	for (auto &create_info : info->entries) {
-		if (!create_info || create_info->type != CatalogType::INDEX_ENTRY) {
-			continue;
-		}
-		auto index_entry = catalog.CreateIndex(context.client, create_info->Cast<CreateIndexInfo>());
-		D_ASSERT(index_entry);
-
-		auto &create_index_info = create_info->Cast<CreateIndexInfo>();
-		auto &table_entry = catalog.GetEntry<TableCatalogEntry>(
-		    context.client, create_index_info.GetQualifiedName().WithName(create_index_info.table));
-		auto &data_table = table_entry.GetStorage();
-
-		IndexStorageInfo storage_info(create_index_info.GetIndexName());
-		storage_info.options.emplace("v1_0_0_storage", false);
-		auto unbound_index = make_uniq<UnboundIndex>(create_index_info.Copy(), std::move(storage_info),
-		                                             data_table.GetTableIOManager(), catalog.GetAttached());
-		data_table.AddIndex(std::move(unbound_index), index_entry->oid);
-
-		// We add unbound indexes, so we immediately bind them.
-		// Otherwise, WAL serialization fails due to unbound indexes.
-		auto &data_table_info = *data_table.GetDataTableInfo();
-		data_table_info.BindIndexes(context.client);
 	}
 
 	return SourceResultType::FINISHED;

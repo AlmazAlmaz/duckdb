@@ -39,7 +39,7 @@ unique_ptr<LogicalOperator> Binder::BindCopyDatabaseSchema(Catalog &from_databas
 		}
 	}
 	for (auto &entry : catalog_entries) {
-		if (entry.get().type == CatalogType::JOB_ENTRY) {
+		if (entry.get().type == CatalogType::JOB_ENTRY || entry.get().type == CatalogType::INDEX_ENTRY) {
 			continue;
 		}
 		auto create_info = entry.get().GetInfo();

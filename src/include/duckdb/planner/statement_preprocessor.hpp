@@ -41,5 +41,6 @@ private:
 	vector<unique_ptr<SQLStatement>> TryReparsePragma(unique_ptr<SQLStatement> statement) const;
 	void ExpandTruncate(MultiStatement &multi_statement) const;
 	void ResolveAddColumn(MultiStatement &multi_statement) const;
+	void ExpandCopyDatabase(vector<unique_ptr<SQLStatement>> &statements) const;
 };
 } // namespace duckdb

@@ -12,8 +12,10 @@
 #include "duckdb/parser/query_node/delete_query_node.hpp"
 #include "duckdb/parser/query_node/update_query_node.hpp"
 #include "duckdb/parser/statement/alter_statement.hpp"
+#include "duckdb/parser/statement/copy_database_statement.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/parser/statement/delete_statement.hpp"
+#include "duckdb/execution/operator/persistent/physical_export.hpp"
 #include "duckdb/parser/statement/update_statement.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
@@ -264,6 +266,36 @@ void StatementPreprocessor::ResolveAddColumn(MultiStatement &multi_statement) co
 	}
 }
 
+void StatementPreprocessor::ExpandCopyDatabase(vector<unique_ptr<SQLStatement>> &statements) const {
+	vector<unique_ptr<SQLStatement>> expanded;
+	for (auto &statement : statements) {
+		expanded.push_back(std::move(statement));
+		if (expanded.back()->type != StatementType::COPY_DATABASE_STATEMENT) {
+			continue;
+		}
+		auto &copy = expanded.back()->Cast<CopyDatabaseStatement>();
+		if (copy.copy_type != CopyDatabaseType::COPY_SCHEMA) {
+			continue;
+		}
+		auto &source = Catalog::GetCatalog(context, copy.from_database);
+		auto &target = Catalog::GetCatalog(context, copy.to_database).GetName();
+		auto transaction = source.GetCatalogTransaction(context);
+		for (auto &entry : PhysicalExport::GetNaiveExportOrder(context, source)) {
+			if (entry.get().type != CatalogType::INDEX_ENTRY) {
+				continue;
+			}
+			auto info = entry.get().GetInfo(transaction);
+			info->SetQualifiedName(info->GetQualifiedName().WithCatalog(target));
+			Parser parser(context);
+			parser.ParseQuery(info->ToString());
+			for (auto &index : parser.statements) {
+				expanded.push_back(std::move(index));
+			}
+		}
+	}
+	statements = std::move(expanded);
+}
+
 vector<unique_ptr<SQLStatement>> StatementPreprocessor::TryReparsePragma(unique_ptr<SQLStatement> statement) const {
 	// Try reparsing
 	const auto info = statement->Cast<PragmaStatement>().info->Copy();
@@ -288,7 +320,8 @@ void StatementPreprocessor::Preprocess(ClientContextLock &lock, vector<unique_pt
 	// Quick check: do we need preprocessing at all?
 	bool needs_preprocessing = false;
 	for (auto &stmt : statements) {
-		if (stmt->type == StatementType::PRAGMA_STATEMENT || stmt->type == StatementType::MULTI_STATEMENT) {
+		if (stmt->type == StatementType::PRAGMA_STATEMENT || stmt->type == StatementType::MULTI_STATEMENT ||
+		    stmt->type == StatementType::COPY_DATABASE_STATEMENT) {
 			needs_preprocessing = true;
 			break;
 		}
@@ -316,8 +349,17 @@ void StatementPreprocessor::PreprocessInternal(ClientContextLock &lock, vector<u
 		switch (statements[i]->type) {
 		case StatementType::PRAGMA_STATEMENT: {
 			auto reparsed_statements = TryReparsePragma(std::move(statements[i]));
+			ExpandCopyDatabase(reparsed_statements);
 			const auto handling = GetTransactionHandling(reparsed_statements, full_transaction_state);
 			AddStatements(reparsed_statements, handling, new_statements);
+			break;
+		}
+		case StatementType::COPY_DATABASE_STATEMENT: {
+			vector<unique_ptr<SQLStatement>> expanded;
+			expanded.push_back(std::move(statements[i]));
+			ExpandCopyDatabase(expanded);
+			const auto handling = GetTransactionHandling(expanded, full_transaction_state, !wrap_multi);
+			AddStatements(expanded, handling, new_statements);
 			break;
 		}
 		case StatementType::MULTI_STATEMENT: {
