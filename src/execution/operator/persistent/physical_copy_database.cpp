@@ -8,6 +8,7 @@
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
+#include "duckdb/parser/parsed_data/create_tokenizer_info.hpp"
 #include "duckdb/parser/parsed_data/create_type_info.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
@@ -50,6 +51,9 @@ SourceResultType PhysicalCopyDatabase::GetDataInternal(ExecutionContext &context
 		case CatalogType::MACRO_ENTRY:
 		case CatalogType::TABLE_MACRO_ENTRY:
 			catalog.CreateFunction(context.client, create_info->Cast<CreateMacroInfo>());
+			break;
+		case CatalogType::TOKENIZER_ENTRY:
+			catalog.CreateTokenizer(context.client, create_info->Cast<CreateTokenizerInfo>());
 			break;
 		case CatalogType::TABLE_ENTRY: {
 			auto binder = Binder::CreateBinder(context.client);
