@@ -76,13 +76,6 @@ Vector::Vector(const Value &value, count_t count) : type(value.type()) {
 Vector::Vector(Vector &&other) noexcept : type(std::move(other.type)), buffer(std::move(other.buffer)) {
 }
 
-idx_t Vector::size() const {
-	if (!buffer) {
-		return 0;
-	}
-	return buffer->Size();
-}
-
 void Vector::CheckCapacity(idx_t capacity) const {
 	if (!buffer) {
 		// no buffer - we accept any capacity

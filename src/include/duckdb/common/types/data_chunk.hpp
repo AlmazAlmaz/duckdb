@@ -55,6 +55,9 @@ public:
 		if (count.IsValid()) {
 			return count.GetIndex();
 		}
+		if (!data.empty() && data[0].GetBufferRef()) {
+			return data[0].size();
+		}
 		return DeriveSize();
 	}
 	inline idx_t ColumnCount() const {
