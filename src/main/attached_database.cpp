@@ -5,6 +5,7 @@
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/enums/checkpoint_on_detach.hpp"
+#include "duckdb/common/fault_points.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
@@ -301,6 +302,7 @@ void AttachedDatabase::InvokeCloseIfLastReference(shared_ptr<AttachedDatabase> &
 		}
 		attached_db->is_closing = true;
 	}
+	SDB_PARK_ONCE_ON_FAILURE("attached_database_close");
 	attached_db->Close(close_action);
 	attached_db.reset();
 }
