@@ -383,15 +383,22 @@ void Executor::CancelTasks() {
 	}
 #endif
 	// Now safe to destroy pipelines, events and states — no tasks reference them
-	lock_guard<mutex> elock(executor_lock);
-	for (auto &rec_cte_ref : recursive_ctes) {
-		auto &rec_cte = rec_cte_ref.get().Cast<PhysicalRecursiveCTE>();
-		rec_cte.recursive_meta_pipeline.reset();
+	vector<shared_ptr<Pipeline>> finished;
+	{
+		lock_guard<mutex> elock(executor_lock);
+		for (auto &rec_cte_ref : recursive_ctes) {
+			auto &rec_cte = rec_cte_ref.get().Cast<PhysicalRecursiveCTE>();
+			rec_cte.recursive_meta_pipeline.reset();
+		}
+		finished = std::move(pipelines);
+		pipelines.clear();
+		root_pipelines.clear();
+		to_be_rescheduled_tasks.clear();
+		events.clear();
 	}
-	pipelines.clear();
-	root_pipelines.clear();
-	to_be_rescheduled_tasks.clear();
-	events.clear();
+	for (auto &pipeline : finished) {
+		pipeline->ClearStates();
+	}
 }
 
 bool Executor::WorkOnTasks() {

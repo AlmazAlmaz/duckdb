@@ -148,6 +148,7 @@ public:
 	void ResetSource(bool force);
 	void PrepareExternalInput();
 	void ClearSource();
+	void ClearStates();
 	void Schedule(shared_ptr<Event> &event);
 	void PrepareFinalize();
 

@@ -754,6 +754,25 @@ void Pipeline::ClearSource() {
 	ResetBatchIndexes();
 }
 
+void Pipeline::ClearStates() {
+	ClearSource();
+	for (auto &op_ref : operators) {
+		auto &op = op_ref.get();
+		unique_ptr<GlobalOperatorState> state;
+		{
+			lock_guard<mutex> guard(op.lock);
+			std::swap(op.op_state, state);
+		}
+	}
+	if (sink) {
+		unique_ptr<GlobalSinkState> state;
+		{
+			lock_guard<mutex> guard(sink->lock);
+			std::swap(sink->sink_state, state);
+		}
+	}
+}
+
 void Pipeline::ResetBatchIndexes() {
 	lock_guard<mutex> batch_guard(batch_lock);
 	batch_indexes.clear();
