@@ -107,7 +107,9 @@ void ContainerCompressionState::OverrideArray(data_ptr_t &destination, bool null
 		auto data_start = destination + sizeof(uint8_t) * COMPRESSED_SEGMENT_COUNT;
 		compressed_arrays[nulls] = reinterpret_cast<uint8_t *>(data_start);
 	} else {
-		destination = AlignPointer<sizeof(uint16_t)>(destination);
+		auto aligned = AlignPointer<sizeof(uint16_t)>(destination);
+		memset(destination, 0, NumericCast<idx_t>(aligned - destination));
+		destination = aligned;
 		arrays[nulls] = reinterpret_cast<uint16_t *>(destination);
 	}
 }
@@ -121,7 +123,9 @@ void ContainerCompressionState::OverrideRun(data_ptr_t &destination, idx_t count
 		auto data_start = destination + sizeof(uint8_t) * COMPRESSED_SEGMENT_COUNT;
 		compressed_runs = reinterpret_cast<uint8_t *>(data_start);
 	} else {
-		destination = AlignPointer<sizeof(RunContainerRLEPair)>(destination);
+		auto aligned = AlignPointer<sizeof(RunContainerRLEPair)>(destination);
+		memset(destination, 0, NumericCast<idx_t>(aligned - destination));
+		destination = aligned;
 		runs = reinterpret_cast<RunContainerRLEPair *>(destination);
 	}
 }
