@@ -780,6 +780,7 @@ string ShellState::EscapeCString(const string &str) {
 }
 
 void ShellState::Exit(int exit_code) {
+	const auto close = GetReference() ? GetReference()->engine.close : nullptr;
 	if (GetReference()) {
 		GetReference()->PrintExitHint(exit_code);
 	}
@@ -790,6 +791,9 @@ void ShellState::Exit(int exit_code) {
 			delete shell_state;
 		}
 		shell_state = nullptr;
+	}
+	if (close) {
+		close();
 	}
 	// then exit
 	exit(exit_code);
@@ -805,7 +809,7 @@ static void InterruptHandler(int NotUsed) {
 	auto &state = ShellState::Get();
 	state.seenInterrupt++;
 	if (state.seenInterrupt > 2) {
-		ShellState::Exit(1);
+		std::_Exit(1);
 	}
 	if (state.conn) {
 		state.conn->context->InterruptFromSignal();
@@ -4269,6 +4273,9 @@ int Run(int argc, char **argv, ShellSubcommand subcommand, ShellEngine engine) {
 		rc = 1;
 		ErrorData error(ex);
 		fprintf(stderr, "Error during clean-up due to error: %s", error.Message().c_str());
+	}
+	if (engine.close) {
+		engine.close();
 	}
 	return rc;
 }
