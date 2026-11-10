@@ -101,6 +101,12 @@ void StatementProperties::RegisterDBRead(Catalog &catalog, ClientContext &contex
 	read_databases[catalog.GetName()] = catalog_identity;
 }
 
+void StatementProperties::RegisterDataRead(const CatalogEntry &entry, ClientContext &context) {
+	if (const auto version = entry.GetDataVersion(context); version.IsValid()) {
+		data_reads.push_back({.entry = &entry, .version = version.GetIndex()});
+	}
+}
+
 void StatementProperties::RegisterDBModify(Catalog &catalog, ClientContext &context,
                                            DatabaseModificationType modification) {
 	auto catalog_identity = CatalogIdentity {catalog.GetOid(), catalog.GetCatalogVersion(context)};

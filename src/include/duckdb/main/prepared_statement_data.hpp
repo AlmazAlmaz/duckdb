@@ -14,7 +14,6 @@
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/winapi.hpp"
-#include "duckdb/function/plan_data_version.hpp"
 #include "duckdb/planner/expression/bound_parameter_data.hpp"
 #include "duckdb/planner/bound_parameter_map.hpp"
 
@@ -48,7 +47,6 @@ public:
 	bound_parameter_map_t value_map;
 
 	case_insensitive_map_t<LogicalType> parameter_type_hints;
-	vector<shared_ptr<PlanDataVersion>> data_versions;
 	timestamp_tz_t prepare_time = timestamp_tz_t::epoch();
 
 public:

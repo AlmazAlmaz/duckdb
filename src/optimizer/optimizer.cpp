@@ -247,28 +247,23 @@ static bool ContainsDML(const LogicalOperator &op) {
 	return false;
 }
 
-static bool CollectDataVersions(const LogicalOperator &op, vector<shared_ptr<PlanDataVersion>> &versions) {
+static bool ContainsUnversionedData(const LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_GET) {
 		auto &get = op.Cast<LogicalGet>();
-		auto version = get.bind_data ? get.bind_data->GetPlanDataVersion() : nullptr;
-		if (!version) {
-			return false;
+		if (!get.bind_data || !get.bind_data->RegistersDataVersions()) {
+			return true;
 		}
-		versions.push_back(std::move(version));
 	}
-	if (op.type == LogicalOperatorType::LOGICAL_EXECUTE && op.children.empty()) {
-		auto &executed = *op.Cast<LogicalExecute>().prepared;
-		if (executed.properties.always_require_rebind) {
-			return false;
-		}
-		versions.insert(versions.end(), executed.data_versions.begin(), executed.data_versions.end());
+	if (op.type == LogicalOperatorType::LOGICAL_EXECUTE && op.children.empty() &&
+	    op.Cast<LogicalExecute>().prepared->properties.always_require_rebind) {
+		return true;
 	}
 	for (auto &child : op.children) {
-		if (!CollectDataVersions(*child, versions)) {
-			return false;
+		if (ContainsUnversionedData(*child)) {
+			return true;
 		}
 	}
-	return true;
+	return false;
 }
 
 template <class VISIT>
@@ -281,18 +276,6 @@ static void VisitPreparedStatements(LogicalOperator &plan, VISIT &&visit) {
 		} else {
 			break;
 		}
-	}
-}
-
-static void TrackDataVersions(const LogicalOperator &plan, PreparedStatementData &prepared) {
-	if (prepared.properties.read_databases.empty()) {
-		return;
-	}
-	vector<shared_ptr<PlanDataVersion>> versions;
-	if (CollectDataVersions(plan, versions)) {
-		prepared.data_versions = std::move(versions);
-	} else {
-		prepared.properties.always_require_rebind = true;
 	}
 }
 
@@ -674,7 +657,9 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 
 	this->plan = std::move(plan_p);
 	VisitPreparedStatements(*plan, [](const LogicalOperator &planned, PreparedStatementData &prepared) {
-		TrackDataVersions(planned, prepared);
+		if (!prepared.properties.read_databases.empty() && ContainsUnversionedData(planned)) {
+			prepared.properties.always_require_rebind = true;
+		}
 	});
 
 	for (auto &pre_optimizer_extension : optimizer_extensions) {

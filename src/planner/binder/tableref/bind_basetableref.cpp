@@ -255,6 +255,7 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 
 		auto &properties = GetStatementProperties();
 		properties.RegisterDBRead(table.ParentCatalog(), context);
+		properties.RegisterDataRead(table, context);
 
 		unique_ptr<FunctionData> bind_data;
 		auto scan_function = table.GetScanFunction(context, bind_data, table_lookup);

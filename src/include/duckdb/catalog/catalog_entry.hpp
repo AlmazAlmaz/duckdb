@@ -82,6 +82,8 @@ public:
 	virtual void BeforeDrop(CatalogTransaction transaction);
 	virtual void OnDrop();
 
+	virtual optional_idx GetDataVersion(ClientContext &context) const;
+
 	virtual unique_ptr<CatalogEntry> Copy(ClientContext &context) const;
 
 	virtual unique_ptr<CreateInfo> GetInfo() const;

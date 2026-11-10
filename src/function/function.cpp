@@ -148,8 +148,8 @@ bool FunctionData::ReadsParametersAtExecution() const {
 	return false;
 }
 
-shared_ptr<PlanDataVersion> FunctionData::GetPlanDataVersion() const {
-	return nullptr;
+bool FunctionData::RegistersDataVersions() const {
+	return false;
 }
 
 Function::Function(Identifier name_p) : name(std::move(name_p)) {

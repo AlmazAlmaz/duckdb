@@ -110,12 +110,18 @@ struct StatementProperties {
 		idx_t resolved_end = 0;
 	};
 
+	struct DataRead {
+		const CatalogEntry *entry = nullptr;
+		idx_t version = 0;
+	};
+
 	//! The set of databases this statement will read from
 	identifier_map_t<CatalogIdentity> read_databases;
 	//! The set of databases this statement will modify
 	identifier_map_t<ModificationInfo> modified_databases;
 	vector<ViewScope> view_scopes;
 	vector<const CatalogEntry *> resolved_entries;
+	vector<DataRead> data_reads;
 	//! Whether or not the statement requires a valid transaction. Almost all statements require this, with the
 	//! exception of ROLLBACK
 	bool requires_valid_transaction;
@@ -138,6 +144,7 @@ struct StatementProperties {
 
 	void RegisterDBRead(Catalog &catalog, ClientContext &context);
 	void RegisterDBModify(Catalog &catalog, ClientContext &context, DatabaseModificationType modification);
+	void RegisterDataRead(const CatalogEntry &entry, ClientContext &context);
 };
 
 } // namespace duckdb
