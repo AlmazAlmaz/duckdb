@@ -1288,7 +1288,14 @@ idx_t RadixPartitionedHashTable::MaxThreads(GlobalSinkState &sink_p) const {
 		return 0;
 	}
 
-	const auto max_threads = MinValue<idx_t>(TaskScheduler::QueryThreads(sink.context), sink.partitions.size());
+	idx_t filled = 0;
+	for (auto &partition : sink.partitions) {
+		if ((partition->data && partition->data->Count() != 0) ||
+		    (partition->exported_data && partition->exported_data->Count() != 0)) {
+			filled++;
+		}
+	}
+	const auto max_threads = MinValue<idx_t>(TaskScheduler::QueryThreads(sink.context), MaxValue<idx_t>(filled, 1));
 	sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(
 	    sink.context, sink.stored_allocators_size + max_threads * sink.max_partition_size);
 
