@@ -258,9 +258,6 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 			lock_guard<mutex> glock(g_state.lock);
 			D_ASSERT(g_state.updated_rows);
 			update_count = g_state.updated_rows->Register(row_ids, update_chunk.size(), sel);
-			if (row_id_handling == RowIdHandling::ERROR && update_count != update_chunk.size()) {
-				throw InvalidInputException("UPDATE command cannot update the same row more than once");
-			}
 			if (update_count != update_chunk.size()) {
 				update_chunk.Slice(sel, update_count);
 				update_row_ids.Slice(row_ids, sel, update_count);
@@ -314,9 +311,6 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 	if (deduplicate) {
 		D_ASSERT(g_state.updated_rows);
 		update_count = g_state.updated_rows->Register(row_ids, update_chunk.size(), sel);
-		if (row_id_handling == RowIdHandling::ERROR && update_count != update_chunk.size()) {
-			throw InvalidInputException("UPDATE command cannot update the same row more than once");
-		}
 	}
 
 	// The update chunk now contains exactly those rows that we are deleting.
