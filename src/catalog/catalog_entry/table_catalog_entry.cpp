@@ -546,6 +546,11 @@ vector<column_t> TableCatalogEntry::GetRowIdColumns() const {
 	return result;
 }
 
+unique_ptr<RowIdSet> TableCatalogEntry::GetMatchedRowSet(ClientContext &context,
+                                                         vector<LogicalType> row_id_types) const {
+	return make_uniq<LockedRowIdSet>(context, std::move(row_id_types));
+}
+
 optional_ptr<CatalogEntry> TableCatalogEntry::CreateTrigger(CatalogTransaction transaction, CreateTriggerInfo &info) {
 	if (!triggers) {
 		throw NotImplementedException("Triggers are not supported for this table type");

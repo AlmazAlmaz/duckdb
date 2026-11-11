@@ -132,8 +132,9 @@ InsertionOrderPreservingMap<string> PhysicalMergeActionSource::ParamsToString() 
 PhysicalMergeInto::PhysicalMergeInto(PhysicalPlan &physical_plan, vector<LogicalType> types, PhysicalOperator &child,
                                      map<MergeActionCondition, vector<unique_ptr<MergeIntoOperator>>> actions_p,
                                      idx_t row_id_index, optional_idx source_marker, bool parallel_p,
-                                     bool return_chunk_p, bool serialize_actions_p)
-    : PhysicalOperator(physical_plan, PhysicalOperatorType::MERGE_INTO, std::move(types), 1),
+                                     bool return_chunk_p, bool serialize_actions_p,
+                                     optional_ptr<TableCatalogEntry> table_p)
+    : PhysicalOperator(physical_plan, PhysicalOperatorType::MERGE_INTO, std::move(types), 1), table(table_p),
       row_id_index(row_id_index), source_marker(source_marker), parallel(parallel_p), return_chunk(return_chunk_p),
       serialize_actions(serialize_actions_p) {
 	children.push_back(child);
@@ -353,7 +354,8 @@ public:
 class MergeIntoGlobalState : public GlobalSinkState {
 public:
 	MergeIntoGlobalState(ClientContext &context, const PhysicalMergeInto &op)
-	    : op(op), matched_rows(context, GetRowIdTypes(op)) {
+	    : op(op), matched_rows(op.table ? op.table->GetMatchedRowSet(context, GetRowIdTypes(op))
+	                                    : make_uniq<LockedRowIdSet>(context, GetRowIdTypes(op))) {
 		merged_count = 0;
 		for (auto &action : op.actions) {
 			shared_ptr<PipelineBroadcastExchange> exchange;
@@ -390,15 +392,13 @@ public:
 	vector<shared_ptr<PipelineBroadcastExchange>> exchanges;
 	atomic<idx_t> merged_count;
 	//! Target row-ids already matched by a WHEN MATCHED modifying action, to detect a second action on a row.
-	mutex match_lock;
-	RowIdDeduplicator matched_rows;
+	unique_ptr<RowIdSet> matched_rows;
 
 	//! Record the matched target rows; throw if any row was already matched (cardinality violation). A distinct
 	//! count below the input count means a row ID repeated.
 	void CheckMatchedRows(DataChunk &matched, idx_t row_id_index) {
-		lock_guard<mutex> glock(match_lock);
-		auto distinct = matched_rows.Register(matched, row_id_index);
-		if (distinct != matched.size()) {
+		const auto count = matched.size();
+		if (matched_rows->Register(matched, row_id_index) != count) {
 			throw InvalidInputException(
 			    "MERGE INTO command cannot affect the same target row more than once. A target row matched more "
 			    "than one source row; ensure the source rows are deduplicated or the ON condition is unique.");

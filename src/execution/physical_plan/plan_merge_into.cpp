@@ -137,7 +137,7 @@ PhysicalOperator &DuckCatalog::PlanMergeInto(ClientContext &context, PhysicalPla
 	bool serialize_actions = append_count > 1;
 
 	return planner.Make<PhysicalMergeInto>(op.types, plan, std::move(actions), op.row_id_start, op.source_marker,
-	                                       parallel, op.return_chunk, serialize_actions);
+	                                       parallel, op.return_chunk, serialize_actions, &op.table);
 }
 
 //===--------------------------------------------------------------------===//
@@ -295,7 +295,7 @@ PhysicalOperator &Catalog::PlanMergeInto(ClientContext &context, PhysicalPlanGen
 	bool serialize_actions = append_count > 1;
 	bool parallel = !serialize_actions && !op.return_chunk;
 	return planner.Make<PhysicalMergeInto>(op.types, plan, std::move(actions), op.row_id_start, op.source_marker,
-	                                       parallel, op.return_chunk, serialize_actions);
+	                                       parallel, op.return_chunk, serialize_actions, &op.table);
 }
 
 PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalMergeInto &op) {

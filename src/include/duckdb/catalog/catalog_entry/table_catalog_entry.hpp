@@ -24,6 +24,7 @@
 #include "duckdb/catalog/catalog_entry/table_column_type.hpp"
 #include "duckdb/catalog/catalog_entry/column_dependency_manager.hpp"
 #include "duckdb/common/table_column.hpp"
+#include "duckdb/execution/row_id_deduplicator.hpp"
 
 namespace duckdb {
 
@@ -174,6 +175,9 @@ public:
 	DUCKDB_API static void AddPostgresSystemColumns(virtual_column_map_t &virtual_columns);
 
 	virtual vector<column_t> GetRowIdColumns() const;
+
+	//! The set a MERGE registers the target rows it matched in, to find a row matched twice
+	virtual unique_ptr<RowIdSet> GetMatchedRowSet(ClientContext &context, vector<LogicalType> row_id_types) const;
 
 	//! Create a trigger on this table (throws for table types that don't support triggers)
 	virtual optional_ptr<CatalogEntry> CreateTrigger(CatalogTransaction transaction, CreateTriggerInfo &info);
