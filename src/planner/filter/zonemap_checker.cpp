@@ -511,15 +511,25 @@ public:
 	}
 
 	FilterPropagateResult Check(const BaseStatistics &stats, optional_ptr<ClientContext> context) const final {
-		lock_guard<mutex> lock(filter_data->lock);
-		if (filter_data->version.load(std::memory_order_relaxed) == 0) {
+		const auto version = filter_data->version.load(std::memory_order_acquire);
+		if (version == 0) {
 			return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 		}
-		return DynamicFilterData::CheckStatistics(stats, filter_data->comparison_type, filter_data->constant);
+		if (version != cached_version) {
+			lock_guard<mutex> lock(filter_data->lock);
+			cached_constant = filter_data->constant;
+			cached_version = filter_data->version.load(std::memory_order_relaxed);
+			if (cached_version == 0) {
+				return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+			}
+		}
+		return DynamicFilterData::CheckStatistics(stats, filter_data->comparison_type, cached_constant);
 	}
 
 private:
 	shared_ptr<DynamicFilterData> filter_data;
+	mutable idx_t cached_version = 0;
+	mutable Value cached_constant;
 };
 
 class ConstantZonemapChecker final : public ZonemapChecker {
