@@ -73,7 +73,7 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 }
 
 Pipeline::Pipeline(Executor &executor_p)
-    : executor(executor_p), ready(false), initialized(false), source(nullptr), sink(nullptr) {
+    : executor(executor_p), ready(false), initialized(false), scheduled_threads(0), source(nullptr), sink(nullptr) {
 }
 
 ClientContext &Pipeline::GetClientContext() {
@@ -121,6 +121,7 @@ void Pipeline::GetDetailedProgress(PipelineProgress &progress) {
 void Pipeline::ScheduleSequentialTask(shared_ptr<Event> &event) {
 	vector<shared_ptr<Task>> tasks;
 	tasks.push_back(make_uniq<PipelineTask>(*this, event));
+	scheduled_threads.store(1, std::memory_order_relaxed);
 	event->SetTasks(std::move(tasks));
 }
 
@@ -133,7 +134,9 @@ bool Pipeline::TryGetMaxThreads(idx_t &max_threads) {
 		return false;
 	}
 	auto source_state = GetSourceState();
-	D_ASSERT(source_state);
+	if (!source_state) {
+		return false;
+	}
 	max_threads = source_state->MaxThreads();
 
 	for (auto &op_ref : operators) {
@@ -191,6 +194,11 @@ idx_t Pipeline::GetMaxThreads() {
 	}
 
 	return max_threads;
+}
+
+optional_idx Pipeline::GetScheduledThreads() const {
+	const auto threads = scheduled_threads.load(std::memory_order_relaxed);
+	return threads == 0 ? optional_idx() : optional_idx(threads);
 }
 
 bool Pipeline::IsOrderDependent() const {
@@ -338,6 +346,7 @@ bool Pipeline::LaunchScanTasks(shared_ptr<Event> &event, idx_t max_threads) {
 	for (idx_t i = 0; i < max_threads; i++) {
 		tasks.push_back(make_uniq<PipelineTask>(*this, event));
 	}
+	scheduled_threads.store(max_threads, std::memory_order_relaxed);
 	event->SetTasks(std::move(tasks));
 	return true;
 }

@@ -61,7 +61,18 @@ public:
 	}
 
 	idx_t MaxThreads() override {
-		return max_threads;
+		if (max_threads <= 1) {
+			return max_threads;
+		}
+		idx_t producer_threads = 0;
+		for (auto &producer : exchange->GetProducerPipelines()) {
+			auto threads = producer.get().GetScheduledThreads();
+			if (!threads.IsValid()) {
+				return max_threads;
+			}
+			producer_threads += threads.GetIndex();
+		}
+		return producer_threads == 0 ? max_threads : MinValue(max_threads, producer_threads);
 	}
 
 	//! Signal that the pipeline of this action no longer reads from the exchange - the merge into must not block on
@@ -650,6 +661,15 @@ void PhysicalMergeInto::BuildPipelines(Pipeline &current, MetaPipeline &meta_pip
 	// build the pipelines that push data into the merge into
 	auto &child_meta_pipeline = meta_pipeline.CreateChildMetaPipeline(current, *this);
 	child_meta_pipeline.Build(children[0].get());
+	vector<shared_ptr<Pipeline>> producers;
+	child_meta_pipeline.GetPipelines(producers, false);
+	std::erase_if(producers,
+	              [this](const shared_ptr<Pipeline> &pipeline) { return pipeline->GetSink().get() != this; });
+	for (auto &action : actions) {
+		if (action->source && !producers.empty()) {
+			action->source->exchange->SetProducerPipelines(producers);
+		}
+	}
 
 	// with RETURNING every action emits its own set of rows - create a pipeline per action to emit them
 	vector<reference<Pipeline>> result_pipelines;
@@ -676,6 +696,9 @@ void PhysicalMergeInto::BuildPipelines(Pipeline &current, MetaPipeline &meta_pip
 		auto &action_meta_pipeline = meta_pipeline.CreateChildMetaPipeline(current, *action->op);
 		action_meta_pipeline.Build(action->op->children[0].get());
 		auto &action_pipeline = action_meta_pipeline.GetBasePipeline();
+		for (auto &producer : producers) {
+			action_pipeline->AddDataflowDependency(producer);
+		}
 		if (serialize_actions && previous_action_pipeline) {
 			// the operators of the actions cannot append to the table concurrently - chain the pipelines
 			action_pipeline->AddDependency(*previous_action_pipeline);
